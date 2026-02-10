@@ -12,6 +12,7 @@ The entire project is written in **Go**:
   compiled to WebAssembly via **TinyGo**. Uses `syumai/workers` for CF Workers integration.
 
 See `ARCHITECTURE.md` for the full design document.
+See `STATUS.md` for current project progress, what's been completed, and what to work on next.
 
 ## Dependencies
 
