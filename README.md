@@ -6,11 +6,13 @@ A WireGuard VPN tunnel over WebRTC. Access your home network from anywhere witho
 
 riftgate connects two peers through a WireGuard tunnel, using WebRTC data channels as the transport layer. A Cloudflare Worker handles signaling and acts as a TURN relay fallback — all on the free tier.
 
-```
-Remote device ←→ WireGuard ←→ WebRTC data channel ←→ WireGuard ←→ Home network
-                                      ↕
-                            Cloudflare Worker
-                          (signaling + TURN relay)
+```mermaid
+graph LR
+    A[Remote device] <--> B[WireGuard]
+    B <--> C[WebRTC data channel]
+    C <--> D[WireGuard]
+    D <--> E[Home network]
+    C <--> F[Cloudflare Worker\nSignaling + TURN relay]
 ```
 
 - **Direct connection**: ICE/STUN punches through NAT when possible — low latency, no relay.
