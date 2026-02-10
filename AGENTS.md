@@ -63,6 +63,16 @@ npx wrangler deploy
 
 ## Code Style
 
+### General Principles
+- Write idiomatic Go. Follow [Effective Go](https://go.dev/doc/effective_go),
+  the [Go Code Review Comments](https://go.dev/wiki/CodeReviewComments) wiki,
+  and [Go Proverbs](https://go-proverbs.github.io/) as baseline style guidance.
+- Accept interfaces, return structs.
+- Make the zero value useful.
+- Don't panic — return errors.
+- A little copying is better than a little dependency.
+- Clear is better than clever.
+
 ### Formatting and Linting
 - Run `gofmt` and `goimports` before committing. All code must be formatted.
 - Use `golangci-lint` with default settings. Fix all warnings.
@@ -115,6 +125,9 @@ npx wrangler deploy
 - Table-driven tests for functions with multiple input/output cases.
 - Use `t.Helper()` in test helper functions.
 - Use `t.Parallel()` for tests that don't share state.
+- Focus tests on behavior, not implementation details.
+- Prioritize testing error paths, edge cases, and concurrency logic.
+- Use `go test -cover` to identify blind spots, not as a gate.
 
 ### Config
 - TOML format for config files.
