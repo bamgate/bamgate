@@ -17,7 +17,10 @@ See `STATUS.md` for current project progress, what's been completed, and what to
 ## Dependencies
 
 - Always use the **latest stable** version of Go and all third-party libraries.
-- When adding a new dependency, use `@latest` (e.g., `go get github.com/pion/webrtc/v4@latest`).
+- When adding a new dependency, write the code that imports it first, then run
+  `go mod tidy` to fetch and record it. Alternatively, run
+  `go get github.com/example/pkg@latest` to pre-fetch it, but do not run
+  `go mod tidy` until the import exists in source — tidy removes unused deps.
 - Periodically run `go get -u ./...` and `go mod tidy` to keep dependencies current.
 
 ## Build / Lint / Test Commands

@@ -1,10 +1,12 @@
 # riftgate — Project Status
 
-Last updated: 2026-02-09
+Last updated: 2026-02-10
 
 ## Current Phase
 
-**Phase 1: Go Client Core (Signaling + WebRTC)** — In progress
+**Phase 1: Go Client Core (Signaling + WebRTC)** — Complete
+**Phase 2: WireGuard Integration** — Complete
+**Phase 3: Cloudflare Worker (Signaling Server)** — Up next
 
 See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 
@@ -16,31 +18,74 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 - Project README
 - **Signaling protocol** (`internal/signaling/protocol.go`): `Message` interface with 6 concrete message types (`JoinMessage`, `OfferMessage`, `AnswerMessage`, `ICECandidateMessage`, `PeersMessage`, `PeerLeftMessage`), JSON marshal/unmarshal with type discriminator registry
 - **Signaling client** (`internal/signaling/client.go`): WebSocket client with channel-based receive, context-aware lifecycle, automatic reconnection with exponential backoff
-- **Signaling tests** (`protocol_test.go`, `client_test.go`): Full test suite with in-memory signaling hub, covering round-trip serialization, peer exchange, peer-left notifications, reconnection, context cancellation, and error cases. All tests pass with `-race`.
+- **Signaling hub** (`internal/signaling/hub.go`): Exported `Hub` type implementing `http.Handler` — relays SDP offers/answers and ICE candidates between connected peers, tracks peer presence, broadcasts join/leave events. Extracted from test suite for reuse by `cmd/riftgate-hub` and tests.
+- **Signaling tests** (`protocol_test.go`, `client_test.go`): Full test suite with signaling hub, covering round-trip serialization, peer exchange, peer-left notifications, reconnection, context cancellation, and error cases. All tests pass with `-race`.
+- **WebRTC ICE configuration** (`internal/webrtc/ice.go`): `ICEConfig` struct with STUN/TURN server support, default public STUN servers (Cloudflare + Google), conversion to pion ICE server format
+- **WebRTC data channel** (`internal/webrtc/datachan.go`): Data channel configuration for unreliable, unordered delivery (`ordered: false`, `maxRetransmits: 0`) — critical for WireGuard UDP-like behavior
+- **WebRTC peer connection** (`internal/webrtc/peer.go`): `Peer` struct wrapping pion `RTCPeerConnection` with SDP offer/answer exchange (`CreateOffer`, `HandleOffer`, `SetAnswer`), trickle ICE candidate relay (`AddICECandidate`), data channel lifecycle management, connection state callbacks, and graceful shutdown
+- **WebRTC integration tests** (`internal/webrtc/peer_test.go`): 4 tests covering SDP offer/answer exchange, bidirectional data transfer over data channels, unreliable/unordered configuration verification, and ICE connection state callbacks. All tests pass with `-race`.
+- **WireGuard key management** (`internal/config/keys.go`): `Key` type (32-byte Curve25519) with `GeneratePrivateKey()` (RFC 7748 §5 clamping via `crypto/curve25519`), `PublicKey()` derivation, `ParseKey()` base64 decoding, `MarshalText`/`UnmarshalText` for seamless TOML/JSON integration, `IsZero()` zero-value check. Verified against RFC 7748 §6.1 test vectors.
+- **TOML config management** (`internal/config/config.go`): `Config` struct with `NetworkConfig` (name, server_url, auth_token, turn_secret), `DeviceConfig` (name, private_key, address), `STUNConfig` (servers), `WebRTCConfig` (ordered, max_retransmits). `LoadConfig`/`SaveConfig` with `BurntSushi/toml`, `DefaultConfigPath()` respecting `$XDG_CONFIG_HOME`, default STUN servers, 0600 file permissions for secrets.
+- **Config tests** (`keys_test.go`, `config_test.go`): 21 tests covering key generation, clamping correctness, RFC 7748 known vector, base64 round-trips, MarshalText/UnmarshalText, TOML save/load round-trip, defaults application, missing file errors, nested directory creation, Key serialization in TOML. All tests pass with `-race`.
+- **WireGuard TUN device** (`internal/tunnel/tun.go`): Wrapper around `wireguard-go`'s `tun.CreateTUN` with default interface name (`riftgate0`) and MTU (1420).
+- **WireGuard UAPI config** (`internal/tunnel/config.go`): `DeviceConfig` and `PeerConfig` structs, `BuildUAPIConfig` / `BuildPeerUAPIConfig` / `BuildRemovePeerUAPIConfig` for generating wireguard-go's IPC configuration strings. Keys hex-encoded per UAPI spec.
+- **WireGuard device lifecycle** (`internal/tunnel/device.go`): `Device` struct wrapping wireguard-go's `device.Device` + TUN interface. `NewDevice` creates and starts the WireGuard device with a custom `conn.Bind`. `AddPeer`/`RemovePeer` for dynamic peer management. Adapts wireguard-go's logger to `slog`.
+- **Tunnel tests** (`internal/tunnel/config_test.go`): 9 tests covering hex key encoding, UAPI config generation (device-only, with peers, peer ordering, multiple allowed IPs, keepalive, remove peer). All tests pass with `-race`.
+- **Bridge / custom conn.Bind** (`internal/bridge/bridge.go`): Custom `conn.Bind` implementation that transports WireGuard encrypted packets over WebRTC data channels instead of UDP. `Bind` struct manages a set of data channels (one per remote peer), routes `Send` calls to the correct data channel via `Endpoint` peer ID, and queues incoming data channel messages for wireguard-go's receive loop. `Endpoint` struct implements `conn.Endpoint` with peer ID-based addressing. Includes `SetDataChannel`/`RemoveDataChannel` for dynamic peer management, `Reset` for bind lifecycle, and graceful `Close` with channel-based unblocking.
+- **Bridge tests** (`internal/bridge/bridge_test.go`): 12 tests covering Open/Receive, Close unblocking, Send to real WebRTC data channels, Send to unknown peer, ParseEndpoint, BatchSize, SetMark, RemoveDataChannel, multiple peers, bidirectional data channel receive, Endpoint methods, and Reset lifecycle. All tests pass with `-race`.
+- **Agent orchestrator** (`internal/agent/agent.go`): Top-level coordinator tying signaling + WebRTC + bridge + WireGuard. Manages full lifecycle: TUN creation, WireGuard device setup with custom Bind, signaling connection with reconnection, peer discovery and WebRTC connection establishment, dynamic WireGuard peer management as data channels open/close. Uses lexicographic peer ID ordering to determine offer/answer roles. Configures TUN interface IP via `ip` command.
+- **CLI `riftgate up`** (`cmd/riftgate/main.go`): Minimal CLI that loads TOML config, validates required fields, sets up signal handling (SIGINT/SIGTERM), and runs the agent until shutdown. Supports `--config` and `-v` flags.
+- **Standalone signaling hub** (`cmd/riftgate-hub/main.go`): Lightweight HTTP server running the signaling `Hub` for local/LAN testing. Supports `-addr` flag. Graceful shutdown on signals.
 
 ## What's Next
 
-Per the implementation plan (ARCHITECTURE.md Phase 1), remaining steps:
+**Phase 2 complete.** Next up is Phase 3 (Cloudflare Worker — Signaling Server):
 
-1. ~~Signaling protocol message types (`internal/signaling/protocol.go`)~~ Done
-2. ~~WebSocket signaling client (`internal/signaling/client.go`)~~ Done
-3. WebRTC peer connection + ICE config (`internal/webrtc/`)
-4. Config and WireGuard key management (`internal/config/`)
-5. WireGuard tunnel setup (`internal/tunnel/`)
-6. TUN-to-DataChannel bridge (`internal/bridge/`)
-7. Agent orchestrator + CLI (`internal/agent/`, `cmd/riftgate/`)
+1. Set up Wrangler project with Worker + Durable Object (TinyGo → Wasm build pipeline)
+2. Implement Worker: auth middleware, WebSocket upgrade, routing to correct DO
+3. Implement DO signaling: peer join/leave, SDP relay, ICE candidate relay
+4. Connect existing Go signaling client to deployed Worker
+5. Test full tunnel end-to-end across the internet
+
+## Testing Phase 2
+
+To test the full tunnel on a LAN:
+
+```bash
+# Terminal 1: Start the signaling hub
+go run ./cmd/riftgate-hub -addr :8080
+
+# Terminal 2: Start peer A (home-server)
+# Create config at ~/.config/riftgate/config.toml:
+# [network]
+# server_url = "ws://192.168.1.X:8080"
+# [device]
+# name = "home-server"
+# private_key = "<base64 key>"
+# address = "10.0.0.1/24"
+sudo go run ./cmd/riftgate -v
+
+# Terminal 3: Start peer B (laptop) on another machine
+# Similar config with name = "laptop", address = "10.0.0.2/24"
+sudo go run ./cmd/riftgate -v
+
+# Test connectivity
+ping 10.0.0.2  # from home-server
+ssh 10.0.0.2   # from home-server
+```
 
 ## Code Status
 
 | Package | Files | Status |
 |---------|-------|--------|
-| `cmd/riftgate` | main.go | Empty `main()` |
-| `internal/agent` | agent.go | Stub |
-| `internal/bridge` | bridge.go | Stub |
-| `internal/config` | config.go, keys.go | Stub |
-| `internal/signaling` | protocol.go, client.go, protocol_test.go, client_test.go | **Implemented + tested** |
-| `internal/tunnel` | config.go, device.go, tun.go | Stub |
-| `internal/webrtc` | datachan.go, ice.go, peer.go | Stub |
+| `cmd/riftgate` | main.go | **Implemented** — minimal `up` command |
+| `cmd/riftgate-hub` | main.go | **Implemented** — standalone signaling server |
+| `internal/agent` | agent.go | **Implemented** — orchestrator |
+| `internal/bridge` | bridge.go, bridge_test.go | **Implemented + tested** |
+| `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** |
+| `internal/signaling` | protocol.go, client.go, hub.go, protocol_test.go, client_test.go | **Implemented + tested** |
+| `internal/tunnel` | config.go, device.go, tun.go, config_test.go | **Implemented + tested** |
+| `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** |
 | `worker/` | — | Directory not created yet (Phase 3+) |
 
 ## Dependencies
@@ -48,6 +93,10 @@ Per the implementation plan (ARCHITECTURE.md Phase 1), remaining steps:
 | Library | Version | Purpose |
 |---------|---------|---------|
 | `github.com/coder/websocket` | v1.8.14 | WebSocket client/server for signaling |
+| `github.com/pion/webrtc/v4` | v4.2.3 | WebRTC stack (ICE, DTLS, SCTP, data channels) |
+| `github.com/BurntSushi/toml` | v1.6.0 | TOML config file parsing |
+| `golang.org/x/crypto` | v0.37.0 | Curve25519 key derivation (WireGuard keys) |
+| `golang.zx2c4.com/wireguard` | v0.0.0-20250521 | Userspace WireGuard device + TUN interface |
 
 ## Open Questions / Decisions
 
@@ -55,5 +104,8 @@ Per the implementation plan (ARCHITECTURE.md Phase 1), remaining steps:
 
 ## Changelog
 
+- **2026-02-10**: Phase 2 complete — WireGuard integration. Implemented tunnel package (TUN creation, UAPI config, device lifecycle), bridge package (custom `conn.Bind` over WebRTC data channels), agent orchestrator, CLI `riftgate up` command, standalone signaling hub binary (`riftgate-hub`). Extracted signaling Hub from tests for reuse. 35 tests across all packages, all passing with `-race`.
+- **2026-02-09**: Implemented config package — TOML config management (load/save with BurntSushi/toml, XDG path support, 0600 permissions) and WireGuard key generation (Curve25519 via crypto/curve25519, RFC 7748 clamping). Phase 1 complete.
+- **2026-02-09**: Implemented WebRTC peer connection manager with ICE configuration, unreliable/unordered data channels, SDP offer/answer exchange, and integration tests.
 - **2026-02-09**: Implemented signaling protocol types and WebSocket client with full test suite.
 - **2026-02-09**: Project bootstrapped — architecture doc, scaffolding, README, coding guidelines.

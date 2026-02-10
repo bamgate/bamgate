@@ -2,155 +2,21 @@ package signaling
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/coder/websocket"
 )
 
-// testHub is an in-memory signaling hub for testing. It accepts WebSocket
-// connections, tracks connected peers, and relays signaling messages between them.
-type testHub struct {
-	mu     sync.Mutex
-	peers  map[string]*testPeer // peerId -> peer
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-type testPeer struct {
-	id        string
-	publicKey string
-	conn      *websocket.Conn
-}
-
-func newTestHub() *testHub {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &testHub{
-		peers:  make(map[string]*testPeer),
-		ctx:    ctx,
-		cancel: cancel,
-	}
-}
-
-// CloseAllConnections forcefully closes all peer WebSocket connections,
-// causing client reads to error immediately.
-func (h *testHub) CloseAllConnections() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, p := range h.peers {
-		p.conn.Close(websocket.StatusGoingAway, "server shutting down")
-	}
-	h.cancel()
-}
-
-func (h *testHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	conn, err := websocket.Accept(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Use the hub's context so we can force-cancel all reads on shutdown.
-	ctx := h.ctx
-
-	// Read the first message, which must be a join.
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		return
-	}
-
-	msg, err := Unmarshal(data)
-	if err != nil {
-		return
-	}
-
-	join, ok := msg.(*JoinMessage)
-	if !ok {
-		return
-	}
-
-	peer := &testPeer{
-		id:        join.PeerID,
-		publicKey: join.PublicKey,
-		conn:      conn,
-	}
-
-	// Send the current peers list to the new peer.
-	h.mu.Lock()
-	var peerInfos []PeerInfo
-	for _, p := range h.peers {
-		peerInfos = append(peerInfos, PeerInfo{PeerID: p.id, PublicKey: p.publicKey})
-	}
-	h.peers[peer.id] = peer
-	h.mu.Unlock()
-
-	peersMsg := &PeersMessage{Peers: peerInfos}
-	if pData, err := Marshal(peersMsg); err == nil {
-		_ = conn.Write(ctx, websocket.MessageText, pData)
-	}
-
-	// Handle messages until disconnect.
-	defer func() {
-		h.mu.Lock()
-		delete(h.peers, peer.id)
-		remaining := make([]*testPeer, 0, len(h.peers))
-		for _, p := range h.peers {
-			remaining = append(remaining, p)
-		}
-		h.mu.Unlock()
-
-		// Notify remaining peers about the departure.
-		leftMsg := &PeerLeftMessage{PeerID: peer.id}
-		leftData, err := Marshal(leftMsg)
-		if err != nil {
-			return
-		}
-		for _, p := range remaining {
-			_ = p.conn.Write(context.Background(), websocket.MessageText, leftData)
-		}
-	}()
-
-	for {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return
-		}
-
-		// Parse the message to find the target peer.
-		var env struct {
-			Type string `json:"type"`
-			To   string `json:"to"`
-		}
-		if err := json.Unmarshal(data, &env); err != nil {
-			continue
-		}
-
-		switch env.Type {
-		case "offer", "answer", "ice-candidate":
-			h.mu.Lock()
-			target, ok := h.peers[env.To]
-			h.mu.Unlock()
-			if ok {
-				_ = target.conn.Write(ctx, websocket.MessageText, data)
-			}
-		}
-	}
-}
-
-// startTestHub starts an httptest.Server running the test hub and returns
+// startTestHub starts an httptest.Server running the signaling Hub and returns
 // the server and a ws:// URL suitable for the signaling client.
 func startTestHub(t *testing.T) (*httptest.Server, string) {
 	t.Helper()
-	hub := newTestHub()
+	hub := NewHub(nil)
 	srv := httptest.NewServer(hub)
 	t.Cleanup(func() {
-		hub.CloseAllConnections()
+		hub.Close()
 		srv.Close()
 	})
 
@@ -383,7 +249,7 @@ func TestClient_PeerLeft(t *testing.T) {
 func TestClient_Reconnect(t *testing.T) {
 	t.Parallel()
 
-	hub := newTestHub()
+	hub := NewHub(nil)
 	srv := httptest.NewServer(hub)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -413,7 +279,7 @@ func TestClient_Reconnect(t *testing.T) {
 
 	// Force-close all connections, then shut down the server.
 	// This ensures the client's Read() returns an error immediately.
-	hub.CloseAllConnections()
+	hub.Close()
 	srv.Close()
 
 	// The client should detect the disconnect, attempt reconnection
