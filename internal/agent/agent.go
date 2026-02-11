@@ -382,6 +382,7 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 	// the tunnel subnet. In production this should be more restrictive.
 	peerCfg := tunnel.PeerConfig{
 		PublicKey:           ps.publicKey,
+		Endpoint:            peerID,
 		AllowedIPs:          []string{"0.0.0.0/0", "::/0"},
 		PersistentKeepalive: 25,
 	}

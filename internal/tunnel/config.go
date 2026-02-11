@@ -19,6 +19,11 @@ type PeerConfig struct {
 	// PublicKey is the peer's WireGuard public key.
 	PublicKey config.Key
 
+	// Endpoint is the peer's endpoint string. For the bridge Bind, this is
+	// the peer ID — Bind.ParseEndpoint converts it to a bridge.Endpoint
+	// that routes Send calls to the correct data channel.
+	Endpoint string
+
 	// AllowedIPs is the list of IP prefixes routed through this peer
 	// (CIDR notation, e.g. "10.0.0.2/32", "0.0.0.0/0").
 	AllowedIPs []string
@@ -49,6 +54,11 @@ func BuildUAPIConfig(device DeviceConfig, peers []PeerConfig) string {
 	// Peer configuration.
 	for _, p := range peers {
 		fmt.Fprintf(&b, "public_key=%s\n", hexKey(p.PublicKey))
+
+		if p.Endpoint != "" {
+			fmt.Fprintf(&b, "endpoint=%s\n", p.Endpoint)
+		}
+
 		b.WriteString("replace_allowed_ips=true\n")
 
 		for _, ip := range p.AllowedIPs {
@@ -68,6 +78,11 @@ func BuildPeerUAPIConfig(peer PeerConfig) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "public_key=%s\n", hexKey(peer.PublicKey))
+
+	if peer.Endpoint != "" {
+		fmt.Fprintf(&b, "endpoint=%s\n", peer.Endpoint)
+	}
+
 	b.WriteString("replace_allowed_ips=true\n")
 
 	for _, ip := range peer.AllowedIPs {
