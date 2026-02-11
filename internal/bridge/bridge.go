@@ -66,7 +66,15 @@ func NewBind(logger *slog.Logger) *Bind {
 // Open implements conn.Bind. It returns a single ReceiveFunc that reads
 // packets from the shared receive channel. The port parameter is ignored
 // since we don't use real UDP.
+//
+// wireguard-go calls Close then Open during BindUpdate cycles, so Open
+// must reset the close channel to allow the new ReceiveFunc to block.
 func (b *Bind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	// Reset the close state so the ReceiveFunc can block on the new closeCh.
+	// This handles the Close→Open cycle that wireguard-go performs during BindUpdate.
+	b.closeOnce = sync.Once{}
+	b.closeCh = make(chan struct{})
+
 	fn := func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		select {
 		case pkt, ok := <-b.recvCh:
@@ -172,9 +180,8 @@ func (b *Bind) RemoveDataChannel(peerID string) {
 	b.log.Info("data channel removed", "peer_id", peerID)
 }
 
-// Reset prepares the Bind for reuse after a Close. This is needed because
-// wireguard-go may call Close and Open multiple times during its lifecycle
-// (e.g., during BindUpdate).
+// Reset prepares the Bind for reuse after a Close. This is called
+// automatically by Open, but is available for explicit use in tests.
 func (b *Bind) Reset() {
 	b.closeOnce = sync.Once{}
 	b.closeCh = make(chan struct{})
