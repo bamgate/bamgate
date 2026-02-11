@@ -12,6 +12,7 @@ type peer struct {
 	wsId      int
 	peerID    string
 	publicKey string
+	address   string
 }
 
 // peers tracks all connected peers by their WebSocket ID.
@@ -24,6 +25,7 @@ var peerByID = make(map[string]int)
 type peerInfo struct {
 	PeerID    string `json:"peerId"`
 	PublicKey string `json:"publicKey"`
+	Address   string `json:"address,omitempty"`
 }
 
 // send sends a JSON message to a specific WebSocket by ID.
@@ -42,17 +44,39 @@ func broadcast(senderWsId int, data []byte) {
 	}
 }
 
+// jsOnRehydrate is called by JS to silently restore a peer after hibernation.
+// Unlike jsOnJoin, it does NOT send a peers list or broadcast a join notification.
+// Arguments: wsId (int), peerId (string), publicKey (string), address (string)
+func jsOnRehydrate(_ js.Value, args []js.Value) any {
+	wsId := args[0].Int()
+	peerID := args[1].String()
+	publicKey := args[2].String()
+	address := args[3].String()
+
+	peers[wsId] = &peer{
+		wsId:      wsId,
+		peerID:    peerID,
+		publicKey: publicKey,
+		address:   address,
+	}
+	peerByID[peerID] = wsId
+
+	return nil
+}
+
 // jsOnJoin is called by JS when a new peer sends a join message.
-// Arguments: wsId (int), peerId (string), publicKey (string)
+// Arguments: wsId (int), peerId (string), publicKey (string), address (string)
 func jsOnJoin(_ js.Value, args []js.Value) any {
 	wsId := args[0].Int()
 	peerID := args[1].String()
 	publicKey := args[2].String()
+	address := args[3].String()
 
 	p := &peer{
 		wsId:      wsId,
 		peerID:    peerID,
 		publicKey: publicKey,
+		address:   address,
 	}
 
 	// Build the current peers list before adding the new peer.
@@ -61,6 +85,7 @@ func jsOnJoin(_ js.Value, args []js.Value) any {
 		peerInfos = append(peerInfos, peerInfo{
 			PeerID:    existing.peerID,
 			PublicKey: existing.publicKey,
+			Address:   existing.address,
 		})
 	}
 
@@ -81,6 +106,7 @@ func jsOnJoin(_ js.Value, args []js.Value) any {
 		"peers": []peerInfo{{
 			PeerID:    peerID,
 			PublicKey: publicKey,
+			Address:   address,
 		}},
 	})
 	broadcast(wsId, newPeerMsg)

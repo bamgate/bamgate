@@ -92,6 +92,27 @@ export class SignalingRoom {
     });
 
     await this.goReadyPromise;
+
+    // Rehydrate Go peer state from surviving WebSocket attachments.
+    // After hibernation, the Wasm module is re-instantiated with empty state,
+    // but WebSocket connections and their attachments survive. Re-register
+    // all previously joined peers so the Go hub knows about them.
+    this._rehydrate();
+  }
+
+  // Rebuild Go hub state from WebSocket attachments after hibernation wake.
+  _rehydrate() {
+    const sockets = this.ctx.getWebSockets();
+    let maxWsId = this.nextWsId;
+    for (const ws of sockets) {
+      const attachment = ws.deserializeAttachment();
+      if (!attachment || !attachment.joined) continue;
+      if (attachment.wsId >= maxWsId) {
+        maxWsId = attachment.wsId + 1;
+      }
+      globalThis.goOnRehydrate(attachment.wsId, attachment.peerId, attachment.publicKey || "", attachment.address || "");
+    }
+    this.nextWsId = maxWsId;
   }
 
   // Find a WebSocket by its wsId stored in the attachment.
@@ -166,10 +187,11 @@ export class SignalingRoom {
         joined: true,
         peerId: msg.peerId,
         publicKey: msg.publicKey || "",
+        address: msg.address || "",
       });
 
       // Notify Go hub.
-      globalThis.goOnJoin(wsId, msg.peerId, msg.publicKey || "");
+      globalThis.goOnJoin(wsId, msg.peerId, msg.publicKey || "", msg.address || "");
       return;
     }
 

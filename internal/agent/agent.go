@@ -47,6 +47,7 @@ type Agent struct {
 type peerState struct {
 	rtcPeer   *rtcpkg.Peer
 	publicKey config.Key // WireGuard public key
+	address   string     // WireGuard tunnel address (e.g. "10.0.0.3/24")
 }
 
 // New creates a new Agent with the given configuration.
@@ -105,6 +106,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		ServerURL: a.cfg.Network.ServerURL,
 		PeerID:    a.cfg.Device.Name,
 		PublicKey: pubKey.String(),
+		Address:   a.cfg.Device.Address,
 		AuthToken: a.cfg.Network.AuthToken,
 		Logger:    a.log,
 		Reconnect: signaling.ReconnectConfig{
@@ -170,15 +172,26 @@ func (a *Agent) handleMessage(ctx context.Context, msg protocol.Message) error {
 func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) error {
 	a.log.Info("received peer list", "count", len(msg.Peers))
 	for _, p := range msg.Peers {
-		a.log.Info("discovered peer", "peer_id", p.PeerID, "public_key", p.PublicKey)
+		a.log.Info("discovered peer", "peer_id", p.PeerID, "public_key", p.PublicKey, "address", p.Address)
 
 		// Determine who offers: the peer with the smaller ID.
 		if a.cfg.Device.Name < p.PeerID {
-			if err := a.initiateConnection(ctx, p.PeerID, p.PublicKey); err != nil {
+			if err := a.initiateConnection(ctx, p.PeerID, p.PublicKey, p.Address); err != nil {
 				a.log.Error("initiating connection", "peer_id", p.PeerID, "error", err)
 			}
+		} else {
+			// We'll receive an offer from this peer. Pre-store their address
+			// so it's available when the data channel opens.
+			a.mu.Lock()
+			if ps, ok := a.peers[p.PeerID]; ok {
+				ps.address = p.Address
+			} else {
+				// Peer state not yet created; store address for later.
+				// createRTCPeer will be called when the offer arrives.
+				a.peers[p.PeerID] = &peerState{address: p.Address}
+			}
+			a.mu.Unlock()
 		}
-		// Otherwise, the remote peer will send us an offer.
 	}
 	return nil
 }
@@ -265,7 +278,7 @@ func (a *Agent) handlePeerLeft(msg *protocol.PeerLeftMessage) error {
 
 // initiateConnection creates a WebRTC peer and sends an SDP offer to the
 // remote peer via signaling.
-func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey string) error {
+func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, address string) error {
 	a.log.Info("initiating connection", "peer_id", peerID)
 
 	// Store the public key so we can configure WireGuard when the data
@@ -289,10 +302,11 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey string
 		return fmt.Errorf("creating RTC peer: %w", err)
 	}
 
-	// Store the WireGuard public key.
+	// Store the WireGuard public key and tunnel address.
 	a.mu.Lock()
 	if ps, ok := a.peers[peerID]; ok {
 		ps.publicKey = wgPubKey
+		ps.address = address
 	}
 	a.mu.Unlock()
 
@@ -351,7 +365,13 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 	}
 
 	a.mu.Lock()
-	a.peers[peerID] = &peerState{rtcPeer: peer}
+	if existing, ok := a.peers[peerID]; ok {
+		// Preserve fields (address, publicKey) that may have been
+		// pre-populated from the peers list.
+		existing.rtcPeer = peer
+	} else {
+		a.peers[peerID] = &peerState{rtcPeer: peer}
+	}
 	a.mu.Unlock()
 
 	return peer, nil
@@ -377,15 +397,29 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 		return
 	}
 
-	// Determine the peer's WireGuard allowed IPs. For now, we allow the
-	// peer's specific address. The address is derived from the peer's
-	// position in the config or could be exchanged via signaling.
-	// For Phase 2 simplicity, we allow all traffic (0.0.0.0/0) and
-	// the tunnel subnet. In production this should be more restrictive.
+	// Determine the peer's WireGuard allowed IPs from their tunnel address.
+	// The address comes from the peers list (e.g. "10.0.0.3/24"). We extract
+	// the host IP and use a /32 so each peer only routes its own address.
+	allowedIPs := []string{"0.0.0.0/0", "::/0"} // fallback if no address
+	if ps.address != "" {
+		ip, _, err := net.ParseCIDR(ps.address)
+		if err != nil {
+			a.log.Warn("invalid peer address, using default AllowedIPs",
+				"peer_id", peerID, "address", ps.address, "error", err)
+		} else {
+			allowedIPs = []string{ip.String() + "/32"}
+			a.log.Info("using peer-specific AllowedIPs",
+				"peer_id", peerID, "allowed_ips", allowedIPs[0])
+		}
+	} else {
+		a.log.Warn("peer has no tunnel address, using default AllowedIPs",
+			"peer_id", peerID)
+	}
+
 	peerCfg := tunnel.PeerConfig{
 		PublicKey:           ps.publicKey,
 		Endpoint:            peerID,
-		AllowedIPs:          []string{"0.0.0.0/0", "::/0"},
+		AllowedIPs:          allowedIPs,
 		PersistentKeepalive: 25,
 	}
 

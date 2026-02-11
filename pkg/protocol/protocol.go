@@ -22,12 +22,14 @@ type Message interface {
 type PeerInfo struct {
 	PeerID    string `json:"peerId"`
 	PublicKey string `json:"publicKey"`
+	Address   string `json:"address,omitempty"`
 }
 
 // JoinMessage is sent by a client to announce itself to the signaling hub.
 type JoinMessage struct {
 	PeerID    string `json:"peerId"`
 	PublicKey string `json:"publicKey"`
+	Address   string `json:"address,omitempty"`
 }
 
 func (JoinMessage) MessageType() string { return "join" }

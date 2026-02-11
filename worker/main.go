@@ -15,6 +15,7 @@ var sendFn js.Value
 
 func main() {
 	// Register Go callbacks that the JS Durable Object class will call.
+	js.Global().Set("goOnRehydrate", js.FuncOf(jsOnRehydrate))
 	js.Global().Set("goOnJoin", js.FuncOf(jsOnJoin))
 	js.Global().Set("goOnMessage", js.FuncOf(jsOnMessage))
 	js.Global().Set("goOnLeave", js.FuncOf(jsOnLeave))
