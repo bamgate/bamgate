@@ -190,15 +190,32 @@ func (a *Agent) handleOffer(ctx context.Context, msg *signaling.OfferMessage) er
 		return fmt.Errorf("creating peer for offer: %w", err)
 	}
 
+	// Store the remote peer's WireGuard public key. The offer carries the
+	// sender's public key so the answering side can configure WireGuard
+	// before the data channel opens.
+	if msg.PublicKey != "" {
+		if wgPubKey, err := config.ParseKey(msg.PublicKey); err != nil {
+			a.log.Warn("invalid public key in offer", "from", msg.From, "error", err)
+		} else {
+			a.mu.Lock()
+			if ps, ok := a.peers[msg.From]; ok {
+				ps.publicKey = wgPubKey
+			}
+			a.mu.Unlock()
+		}
+	}
+
 	answerSDP, err := peer.HandleOffer(msg.SDP)
 	if err != nil {
 		return fmt.Errorf("handling offer: %w", err)
 	}
 
+	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)
 	return a.sigClient.Send(ctx, &signaling.AnswerMessage{
-		From: a.cfg.Device.Name,
-		To:   msg.From,
-		SDP:  answerSDP,
+		From:      a.cfg.Device.Name,
+		To:        msg.From,
+		SDP:       answerSDP,
+		PublicKey: pubKey.String(),
 	})
 }
 
@@ -208,6 +225,11 @@ func (a *Agent) handleAnswer(msg *signaling.AnswerMessage) error {
 
 	a.mu.Lock()
 	ps, ok := a.peers[msg.From]
+	if ok && ps.publicKey.IsZero() && msg.PublicKey != "" {
+		if wgPubKey, err := config.ParseKey(msg.PublicKey); err == nil {
+			ps.publicKey = wgPubKey
+		}
+	}
 	a.mu.Unlock()
 
 	if !ok {
@@ -278,10 +300,12 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey string
 		return fmt.Errorf("creating offer: %w", err)
 	}
 
+	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)
 	return a.sigClient.Send(ctx, &signaling.OfferMessage{
-		From: a.cfg.Device.Name,
-		To:   peerID,
-		SDP:  offerSDP,
+		From:      a.cfg.Device.Name,
+		To:        peerID,
+		SDP:       offerSDP,
+		PublicKey: pubKey.String(),
 	})
 }
 

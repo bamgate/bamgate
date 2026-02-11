@@ -110,6 +110,21 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = c.Write(ctx, websocket.MessageText, pData)
 	}
 
+	// Notify existing peers about the new arrival. We send a PeersMessage
+	// containing only the new peer so existing agents learn its ID and
+	// public key and can initiate a WebRTC connection.
+	newPeerMsg := &PeersMessage{Peers: []PeerInfo{{PeerID: peer.id, PublicKey: peer.publicKey}}}
+	if npData, mErr := Marshal(newPeerMsg); mErr == nil {
+		h.mu.Lock()
+		for _, p := range h.peers {
+			if p.id == peer.id {
+				continue
+			}
+			_ = p.conn.Write(ctx, websocket.MessageText, npData)
+		}
+		h.mu.Unlock()
+	}
+
 	// Handle messages until disconnect.
 	defer func() {
 		h.mu.Lock()

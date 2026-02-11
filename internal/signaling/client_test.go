@@ -2,7 +2,6 @@ package signaling
 
 import (
 	"context"
-	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -122,6 +121,16 @@ func TestClient_TwoPeers_ExchangeOffer(t *testing.T) {
 		t.Errorf("unexpected peers list: %+v", peers.Peers)
 	}
 
+	// A receives a join notification for B.
+	msg = receiveTimeout(t, clientA.Messages(), 2*time.Second)
+	joinNotify, ok := msg.(*PeersMessage)
+	if !ok {
+		t.Fatalf("expected *PeersMessage (join notification), got %T", msg)
+	}
+	if len(joinNotify.Peers) != 1 || joinNotify.Peers[0].PeerID != "peer-b" {
+		t.Errorf("unexpected join notification: %+v", joinNotify.Peers)
+	}
+
 	// A sends an offer to B.
 	offer := &OfferMessage{From: "peer-a", To: "peer-b", SDP: "v=0\r\noffer-sdp"}
 	if err := clientA.Send(ctx, offer); err != nil {
@@ -182,7 +191,8 @@ func TestClient_TwoPeers_ExchangeICECandidate(t *testing.T) {
 		t.Fatalf("clientB.Connect() error: %v", err)
 	}
 	defer clientB.Close()
-	receiveTimeout(t, clientB.Messages(), 2*time.Second) // drain peers
+	receiveTimeout(t, clientB.Messages(), 2*time.Second) // drain peers list for B
+	receiveTimeout(t, clientA.Messages(), 2*time.Second) // drain B's join notification on A
 
 	// A sends an ICE candidate to B.
 	candidate := &ICECandidateMessage{
@@ -231,7 +241,8 @@ func TestClient_PeerLeft(t *testing.T) {
 	if err := clientB.Connect(ctx); err != nil {
 		t.Fatalf("clientB.Connect() error: %v", err)
 	}
-	receiveTimeout(t, clientB.Messages(), 2*time.Second) // drain peers
+	receiveTimeout(t, clientB.Messages(), 2*time.Second) // drain peers list for B
+	receiveTimeout(t, clientA.Messages(), 2*time.Second) // drain B's join notification on A
 
 	// Close B — A should receive a peer-left notification.
 	clientB.Close()
@@ -379,22 +390,48 @@ func TestClient_MultiplePeers_FullExchange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Connect three peers.
+	// Connect three peers sequentially, draining all signaling messages
+	// (initial peers list + join notifications to existing peers) after each.
 	clients := make([]*Client, 3)
-	for i := range clients {
-		clients[i] = NewClient(ClientConfig{
-			ServerURL: wsURL,
-			PeerID:    fmt.Sprintf("peer-%d", i),
-			PublicKey: fmt.Sprintf("key-%d", i),
-		})
-		if err := clients[i].Connect(ctx); err != nil {
-			t.Fatalf("client[%d].Connect() error: %v", i, err)
-		}
-		defer clients[i].Close()
 
-		// Drain the initial peers message.
-		receiveTimeout(t, clients[i].Messages(), 2*time.Second)
+	// peer-0 joins — gets empty peers list, no one to notify.
+	clients[0] = NewClient(ClientConfig{
+		ServerURL: wsURL,
+		PeerID:    "peer-0",
+		PublicKey: "key-0",
+	})
+	if err := clients[0].Connect(ctx); err != nil {
+		t.Fatalf("client[0].Connect() error: %v", err)
 	}
+	defer clients[0].Close()
+	receiveTimeout(t, clients[0].Messages(), 2*time.Second) // peers list (empty)
+
+	// peer-1 joins — gets peers list with peer-0. peer-0 gets join notification.
+	clients[1] = NewClient(ClientConfig{
+		ServerURL: wsURL,
+		PeerID:    "peer-1",
+		PublicKey: "key-1",
+	})
+	if err := clients[1].Connect(ctx); err != nil {
+		t.Fatalf("client[1].Connect() error: %v", err)
+	}
+	defer clients[1].Close()
+	receiveTimeout(t, clients[1].Messages(), 2*time.Second) // peers list for peer-1
+	receiveTimeout(t, clients[0].Messages(), 2*time.Second) // peer-1 join notification on peer-0
+
+	// peer-2 joins — gets peers list. peer-0 and peer-1 each get join notification.
+	clients[2] = NewClient(ClientConfig{
+		ServerURL: wsURL,
+		PeerID:    "peer-2",
+		PublicKey: "key-2",
+	})
+	if err := clients[2].Connect(ctx); err != nil {
+		t.Fatalf("client[2].Connect() error: %v", err)
+	}
+	defer clients[2].Close()
+	receiveTimeout(t, clients[2].Messages(), 2*time.Second) // peers list for peer-2
+	receiveTimeout(t, clients[0].Messages(), 2*time.Second) // peer-2 join notification on peer-0
+	receiveTimeout(t, clients[1].Messages(), 2*time.Second) // peer-2 join notification on peer-1
 
 	// peer-0 sends an offer to peer-2.
 	offer := &OfferMessage{From: "peer-0", To: "peer-2", SDP: "sdp-from-0-to-2"}

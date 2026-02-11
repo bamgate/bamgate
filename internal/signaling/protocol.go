@@ -28,18 +28,20 @@ func (JoinMessage) MessageType() string { return "join" }
 
 // OfferMessage carries an SDP offer from one peer to another.
 type OfferMessage struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	SDP  string `json:"sdp"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	SDP       string `json:"sdp"`
+	PublicKey string `json:"publicKey,omitempty"`
 }
 
 func (OfferMessage) MessageType() string { return "offer" }
 
 // AnswerMessage carries an SDP answer from one peer to another.
 type AnswerMessage struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	SDP  string `json:"sdp"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	SDP       string `json:"sdp"`
+	PublicKey string `json:"publicKey,omitempty"`
 }
 
 func (AnswerMessage) MessageType() string { return "answer" }
