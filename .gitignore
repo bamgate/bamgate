@@ -15,5 +15,6 @@ Thumbs.db
 # Go
 /vendor/
 
-# Config (contains secrets)
+# Config and keys (contain secrets)
 config.toml
+*.key
