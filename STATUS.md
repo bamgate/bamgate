@@ -6,7 +6,7 @@ Last updated: 2026-02-10
 
 **Phase 1: Go Client Core (Signaling + WebRTC)** — Complete
 **Phase 2: WireGuard Integration** — Complete (tested end-to-end, tunnel working)
-**Phase 3: Cloudflare Worker (Signaling Server)** — In progress
+**Phase 3: Cloudflare Worker (Signaling Server)** — Complete (deployed, multi-peer tested)
 
 See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 
@@ -44,23 +44,25 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 - **Shared protocol package** (`pkg/protocol/`): Extracted signaling protocol types from `internal/signaling/` into a standalone package with zero external dependencies (only `encoding/json` and `fmt`). TinyGo-compatible, shared between Go client and Cloudflare Worker.
 - **Cloudflare Worker signaling server** (`worker/`): Go/Wasm Durable Object implementing the signaling hub. Architecture: JS shell (`src/worker.mjs`) exports Worker `fetch` handler and `SignalingRoom` DO class using WebSocket Hibernation API. DO class bridges WebSocket events to Go/Wasm callbacks via `syscall/js`. Go hub logic (`hub.go`) manages peer state, routes signaling messages (offer/answer/ice-candidate), broadcasts join/leave events. Wasm entry point (`main.go`) registers callbacks and blocks. Bearer token auth on `/connect` endpoint via `AUTH_TOKEN` env var.
 - **Bearer token auth**: Added `AuthToken` field to `signaling.ClientConfig` and `Authorization: Bearer <token>` header to WebSocket dial. Agent passes `config.Network.AuthToken` to signaling client.
+- **DO hibernation state recovery**: After Cloudflare hibernates the Durable Object, Wasm is re-instantiated with empty state but WebSocket connections survive. Added `_rehydrate()` in JS that restores Go hub peer state from WebSocket attachments via `goOnRehydrate` callback.
+- **Deployed to Cloudflare**: Worker live at `https://riftgate.ag94441.workers.dev` (432KB total upload). Tested with 3 peers across the internet (2 home LAN machines + DigitalOcean droplet).
+- **Peer-specific AllowedIPs routing**: Fixed critical bug where every WireGuard peer got `AllowedIPs: 0.0.0.0/0`, causing last-added peer's route to override all previous peers. Now exchanges tunnel addresses via signaling (`Address` field in `JoinMessage`/`PeerInfo`), extracts host IP from CIDR, and uses `/32` AllowedIP per peer. Full pipeline: client → signaling → worker hub → peers list → agent → WireGuard config.
 
 ## What's Next
 
-**Phase 3 nearly complete** — Cloudflare Worker signaling server built and tested locally:
+**Phase 3 complete.** Next steps:
 
-1. ~~Set up Wrangler project with Worker + Durable Object (TinyGo → Wasm build pipeline)~~ — Done
-2. ~~Implement Worker: auth middleware, WebSocket upgrade, routing to correct DO~~ — Done
-3. ~~Implement DO signaling: peer join/leave, SDP relay, ICE candidate relay~~ — Done
-4. ~~Add bearer token auth to signaling client~~ — Done
-5. ~~Build with TinyGo and test locally with `wrangler dev`~~ — Done (408KB Wasm binary, all signaling flows verified)
-6. Deploy to Cloudflare and test full tunnel end-to-end across the internet
+1. **Phase 4: TURN relay** — For peers behind symmetric NAT where direct ICE fails. Options: Cloudflare Worker-based TURN relay or external TURN server.
+2. **Subnet routing** — Allow peers to advertise additional routable subnets (e.g. `192.168.1.0/24`) so remote peers can access home LAN services through the tunnel.
+3. **Rate limiting** — Add request rate limiting to the Worker `/connect` endpoint to prevent auth token brute-force and request quota abuse.
+4. **Android client** — gomobile build of the core library for Android.
 
-## Testing Phase 2
+## Testing
 
-See [docs/testing-lan.md](docs/testing-lan.md) for the full LAN testing guide.
+See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
-**Tested and working** on two Linux machines (2026-02-10): ICE connects via host candidates on the LAN, WebRTC data channel opens, WireGuard handshake completes, bidirectional ping works.
+- **Phase 2 LAN test** (2026-02-10): Two Linux machines, ICE host candidates, WebRTC data channel, WireGuard handshake, bidirectional ping — all working.
+- **Phase 3 internet test** (2026-02-10): Three peers (2 home LAN + 1 DigitalOcean droplet) connected via Cloudflare Worker signaling. All peers can ping each other. ~2ms latency on LAN path, internet path varies by region.
 
 ## Code Status
 
@@ -75,7 +77,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the full LAN testing guide.
 | `pkg/protocol` | protocol.go, protocol_test.go | **Implemented + tested** |
 | `internal/tunnel` | config.go, device.go, tun.go, config_test.go | **Implemented + tested** |
 | `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** |
-| `worker/` | hub.go, main.go, src/worker.mjs | **Implemented + tested locally** — TinyGo 408KB Wasm, verified with wrangler dev |
+| `worker/` | hub.go, main.go, src/worker.mjs | **Implemented + deployed** — TinyGo 410KB Wasm, Cloudflare Workers free tier |
 
 ## Dependencies
 
@@ -93,6 +95,8 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the full LAN testing guide.
 
 ## Changelog
 
+- **2026-02-10**: Fixed AllowedIPs routing bug — exchanged tunnel addresses via signaling, use per-peer `/32` AllowedIPs instead of `0.0.0.0/0`. All 3 peers can now ping each other simultaneously. Released v0.3.0.
+- **2026-02-10**: Phase 3 complete — deployed Cloudflare Worker signaling server. Tested with 3 peers across the internet. Fixed DO hibernation state loss with rehydration from WebSocket attachments. Added bearer token auth.
 - **2026-02-10**: Phase 3 implementation — Cloudflare Worker signaling server. Extracted protocol types to shared `pkg/protocol/` package (TinyGo-compatible). Scaffolded `worker/` with Go/Wasm Durable Object: JS shell with WebSocket Hibernation API bridges to Go hub logic via `syscall/js`. Added bearer token auth to signaling client and agent. Built with TinyGo (408KB Wasm binary). Tested full signaling flow locally with `wrangler dev`: peer join, peers list, offer/answer relay, ICE candidate relay, peer-left notification — all working. Key finding: `no_bundle = true` + `find_additional_modules = true` required to avoid esbuild bundling `wasm_exec.js` (which causes infinite recursion in Workers runtime).
 - **2026-02-10**: End-to-end LAN tunnel verified. Fixed three bugs blocking the tunnel: hub not broadcasting join events to existing peers, offer/answer messages missing WireGuard public keys, and bridge Bind receive loop dying after wireguard-go's BindUpdate cycle. Added `Endpoint` field to `PeerConfig` for Bind routing. Added `PublicKey` field to `OfferMessage`/`AnswerMessage`. Added LAN testing guide (`docs/testing-lan.md`). Released v0.2.0.
 - **2026-02-10**: Phase 2 complete — WireGuard integration. Implemented tunnel package (TUN creation, UAPI config, device lifecycle), bridge package (custom `conn.Bind` over WebRTC data channels), agent orchestrator, CLI `riftgate up` command, standalone signaling hub binary (`riftgate-hub`). Extracted signaling Hub from tests for reuse. 35 tests across all packages, all passing with `-race`.
