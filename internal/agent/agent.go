@@ -25,6 +25,7 @@ import (
 	"github.com/kuuji/riftgate/internal/signaling"
 	"github.com/kuuji/riftgate/internal/tunnel"
 	rtcpkg "github.com/kuuji/riftgate/internal/webrtc"
+	"github.com/kuuji/riftgate/pkg/protocol"
 )
 
 // Agent orchestrates the riftgate VPN tunnel. It connects to the signaling
@@ -104,6 +105,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		ServerURL: a.cfg.Network.ServerURL,
 		PeerID:    a.cfg.Device.Name,
 		PublicKey: pubKey.String(),
+		AuthToken: a.cfg.Network.AuthToken,
 		Logger:    a.log,
 		Reconnect: signaling.ReconnectConfig{
 			Enabled: true,
@@ -144,17 +146,17 @@ func (a *Agent) processMessages(ctx context.Context) error {
 }
 
 // handleMessage dispatches a signaling message to the appropriate handler.
-func (a *Agent) handleMessage(ctx context.Context, msg signaling.Message) error {
+func (a *Agent) handleMessage(ctx context.Context, msg protocol.Message) error {
 	switch m := msg.(type) {
-	case *signaling.PeersMessage:
+	case *protocol.PeersMessage:
 		return a.handlePeers(ctx, m)
-	case *signaling.OfferMessage:
+	case *protocol.OfferMessage:
 		return a.handleOffer(ctx, m)
-	case *signaling.AnswerMessage:
+	case *protocol.AnswerMessage:
 		return a.handleAnswer(m)
-	case *signaling.ICECandidateMessage:
+	case *protocol.ICECandidateMessage:
 		return a.handleICECandidate(m)
-	case *signaling.PeerLeftMessage:
+	case *protocol.PeerLeftMessage:
 		return a.handlePeerLeft(m)
 	default:
 		a.log.Debug("ignoring unknown message type", "type", msg.MessageType())
@@ -165,7 +167,7 @@ func (a *Agent) handleMessage(ctx context.Context, msg signaling.Message) error 
 // handlePeers processes the initial peer list. For each existing peer, we
 // initiate a WebRTC connection if our peer ID is lexicographically smaller
 // (to avoid both sides simultaneously offering).
-func (a *Agent) handlePeers(ctx context.Context, msg *signaling.PeersMessage) error {
+func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) error {
 	a.log.Info("received peer list", "count", len(msg.Peers))
 	for _, p := range msg.Peers {
 		a.log.Info("discovered peer", "peer_id", p.PeerID, "public_key", p.PublicKey)
@@ -182,7 +184,7 @@ func (a *Agent) handlePeers(ctx context.Context, msg *signaling.PeersMessage) er
 }
 
 // handleOffer processes an incoming SDP offer from a remote peer.
-func (a *Agent) handleOffer(ctx context.Context, msg *signaling.OfferMessage) error {
+func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) error {
 	a.log.Info("received offer", "from", msg.From)
 
 	peer, err := a.createRTCPeer(ctx, msg.From)
@@ -211,7 +213,7 @@ func (a *Agent) handleOffer(ctx context.Context, msg *signaling.OfferMessage) er
 	}
 
 	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)
-	return a.sigClient.Send(ctx, &signaling.AnswerMessage{
+	return a.sigClient.Send(ctx, &protocol.AnswerMessage{
 		From:      a.cfg.Device.Name,
 		To:        msg.From,
 		SDP:       answerSDP,
@@ -220,7 +222,7 @@ func (a *Agent) handleOffer(ctx context.Context, msg *signaling.OfferMessage) er
 }
 
 // handleAnswer processes an incoming SDP answer from a remote peer.
-func (a *Agent) handleAnswer(msg *signaling.AnswerMessage) error {
+func (a *Agent) handleAnswer(msg *protocol.AnswerMessage) error {
 	a.log.Info("received answer", "from", msg.From)
 
 	a.mu.Lock()
@@ -240,7 +242,7 @@ func (a *Agent) handleAnswer(msg *signaling.AnswerMessage) error {
 }
 
 // handleICECandidate processes an incoming ICE candidate from a remote peer.
-func (a *Agent) handleICECandidate(msg *signaling.ICECandidateMessage) error {
+func (a *Agent) handleICECandidate(msg *protocol.ICECandidateMessage) error {
 	a.mu.Lock()
 	ps, ok := a.peers[msg.From]
 	a.mu.Unlock()
@@ -255,7 +257,7 @@ func (a *Agent) handleICECandidate(msg *signaling.ICECandidateMessage) error {
 
 // handlePeerLeft tears down the WebRTC connection and removes the WireGuard
 // peer when a remote peer disconnects.
-func (a *Agent) handlePeerLeft(msg *signaling.PeerLeftMessage) error {
+func (a *Agent) handlePeerLeft(msg *protocol.PeerLeftMessage) error {
 	a.log.Info("peer left", "peer_id", msg.PeerID)
 	a.removePeer(msg.PeerID)
 	return nil
@@ -301,7 +303,7 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey string
 	}
 
 	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)
-	return a.sigClient.Send(ctx, &signaling.OfferMessage{
+	return a.sigClient.Send(ctx, &protocol.OfferMessage{
 		From:      a.cfg.Device.Name,
 		To:        peerID,
 		SDP:       offerSDP,
@@ -322,7 +324,7 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 		Logger:   a.log,
 
 		OnICECandidate: func(candidate string) {
-			if err := a.sigClient.Send(ctx, &signaling.ICECandidateMessage{
+			if err := a.sigClient.Send(ctx, &protocol.ICECandidateMessage{
 				From:      a.cfg.Device.Name,
 				To:        peerID,
 				Candidate: candidate,

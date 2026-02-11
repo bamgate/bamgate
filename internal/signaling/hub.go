@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
+
+	"github.com/kuuji/riftgate/pkg/protocol"
 )
 
 // Hub is a signaling server that relays WebRTC signaling messages between
@@ -76,13 +78,13 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := Unmarshal(data)
+	msg, err := protocol.Unmarshal(data)
 	if err != nil {
 		h.log.Warn("malformed join message", "error", err)
 		return
 	}
 
-	join, ok := msg.(*JoinMessage)
+	join, ok := msg.(*protocol.JoinMessage)
 	if !ok {
 		h.log.Warn("first message is not join", "type", msg.MessageType())
 		return
@@ -98,23 +100,23 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Send the current peers list to the new peer.
 	h.mu.Lock()
-	var peerInfos []PeerInfo
+	var peerInfos []protocol.PeerInfo
 	for _, p := range h.peers {
-		peerInfos = append(peerInfos, PeerInfo{PeerID: p.id, PublicKey: p.publicKey})
+		peerInfos = append(peerInfos, protocol.PeerInfo{PeerID: p.id, PublicKey: p.publicKey})
 	}
 	h.peers[peer.id] = peer
 	h.mu.Unlock()
 
-	peersMsg := &PeersMessage{Peers: peerInfos}
-	if pData, mErr := Marshal(peersMsg); mErr == nil {
+	peersMsg := &protocol.PeersMessage{Peers: peerInfos}
+	if pData, mErr := protocol.Marshal(peersMsg); mErr == nil {
 		_ = c.Write(ctx, websocket.MessageText, pData)
 	}
 
 	// Notify existing peers about the new arrival. We send a PeersMessage
 	// containing only the new peer so existing agents learn its ID and
 	// public key and can initiate a WebRTC connection.
-	newPeerMsg := &PeersMessage{Peers: []PeerInfo{{PeerID: peer.id, PublicKey: peer.publicKey}}}
-	if npData, mErr := Marshal(newPeerMsg); mErr == nil {
+	newPeerMsg := &protocol.PeersMessage{Peers: []protocol.PeerInfo{{PeerID: peer.id, PublicKey: peer.publicKey}}}
+	if npData, mErr := protocol.Marshal(newPeerMsg); mErr == nil {
 		h.mu.Lock()
 		for _, p := range h.peers {
 			if p.id == peer.id {
@@ -138,8 +140,8 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("peer left", "peer_id", peer.id)
 
 		// Notify remaining peers about the departure.
-		leftMsg := &PeerLeftMessage{PeerID: peer.id}
-		leftData, mErr := Marshal(leftMsg)
+		leftMsg := &protocol.PeerLeftMessage{PeerID: peer.id}
+		leftData, mErr := protocol.Marshal(leftMsg)
 		if mErr != nil {
 			return
 		}

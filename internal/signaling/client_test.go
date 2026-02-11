@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kuuji/riftgate/pkg/protocol"
 )
 
 // startTestHub starts an httptest.Server running the signaling Hub and returns
@@ -25,7 +27,7 @@ func startTestHub(t *testing.T) (*httptest.Server, string) {
 }
 
 // receiveTimeout reads a message from the channel with a timeout.
-func receiveTimeout(t *testing.T, ch <-chan Message, timeout time.Duration) Message {
+func receiveTimeout(t *testing.T, ch <-chan protocol.Message, timeout time.Duration) protocol.Message {
 	t.Helper()
 	select {
 	case msg, ok := <-ch:
@@ -40,7 +42,7 @@ func receiveTimeout(t *testing.T, ch <-chan Message, timeout time.Duration) Mess
 }
 
 // expectNoMessage asserts that no message arrives within the given duration.
-func expectNoMessage(t *testing.T, ch <-chan Message, duration time.Duration) {
+func expectNoMessage(t *testing.T, ch <-chan protocol.Message, duration time.Duration) {
 	t.Helper()
 	select {
 	case msg := <-ch:
@@ -70,9 +72,9 @@ func TestClient_ConnectAndJoin(t *testing.T) {
 
 	// The hub should send a peers message (empty list since we're the first).
 	msg := receiveTimeout(t, client.Messages(), 2*time.Second)
-	peers, ok := msg.(*PeersMessage)
+	peers, ok := msg.(*protocol.PeersMessage)
 	if !ok {
-		t.Fatalf("expected *PeersMessage, got %T", msg)
+		t.Fatalf("expected *protocol.PeersMessage, got %T", msg)
 	}
 	if len(peers.Peers) != 0 {
 		t.Errorf("expected 0 peers, got %d", len(peers.Peers))
@@ -113,9 +115,9 @@ func TestClient_TwoPeers_ExchangeOffer(t *testing.T) {
 
 	// B receives a peers list containing A.
 	msg := receiveTimeout(t, clientB.Messages(), 2*time.Second)
-	peers, ok := msg.(*PeersMessage)
+	peers, ok := msg.(*protocol.PeersMessage)
 	if !ok {
-		t.Fatalf("expected *PeersMessage, got %T", msg)
+		t.Fatalf("expected *protocol.PeersMessage, got %T", msg)
 	}
 	if len(peers.Peers) != 1 || peers.Peers[0].PeerID != "peer-a" {
 		t.Errorf("unexpected peers list: %+v", peers.Peers)
@@ -123,41 +125,41 @@ func TestClient_TwoPeers_ExchangeOffer(t *testing.T) {
 
 	// A receives a join notification for B.
 	msg = receiveTimeout(t, clientA.Messages(), 2*time.Second)
-	joinNotify, ok := msg.(*PeersMessage)
+	joinNotify, ok := msg.(*protocol.PeersMessage)
 	if !ok {
-		t.Fatalf("expected *PeersMessage (join notification), got %T", msg)
+		t.Fatalf("expected *protocol.PeersMessage (join notification), got %T", msg)
 	}
 	if len(joinNotify.Peers) != 1 || joinNotify.Peers[0].PeerID != "peer-b" {
 		t.Errorf("unexpected join notification: %+v", joinNotify.Peers)
 	}
 
 	// A sends an offer to B.
-	offer := &OfferMessage{From: "peer-a", To: "peer-b", SDP: "v=0\r\noffer-sdp"}
+	offer := &protocol.OfferMessage{From: "peer-a", To: "peer-b", SDP: "v=0\r\noffer-sdp"}
 	if err := clientA.Send(ctx, offer); err != nil {
 		t.Fatalf("Send(offer) error: %v", err)
 	}
 
 	// B receives the offer.
 	msg = receiveTimeout(t, clientB.Messages(), 2*time.Second)
-	gotOffer, ok := msg.(*OfferMessage)
+	gotOffer, ok := msg.(*protocol.OfferMessage)
 	if !ok {
-		t.Fatalf("expected *OfferMessage, got %T", msg)
+		t.Fatalf("expected *protocol.OfferMessage, got %T", msg)
 	}
 	if gotOffer.From != "peer-a" || gotOffer.SDP != "v=0\r\noffer-sdp" {
 		t.Errorf("unexpected offer: %+v", gotOffer)
 	}
 
 	// B sends an answer back to A.
-	answer := &AnswerMessage{From: "peer-b", To: "peer-a", SDP: "v=0\r\nanswer-sdp"}
+	answer := &protocol.AnswerMessage{From: "peer-b", To: "peer-a", SDP: "v=0\r\nanswer-sdp"}
 	if err := clientB.Send(ctx, answer); err != nil {
 		t.Fatalf("Send(answer) error: %v", err)
 	}
 
 	// A receives the answer.
 	msg = receiveTimeout(t, clientA.Messages(), 2*time.Second)
-	gotAnswer, ok := msg.(*AnswerMessage)
+	gotAnswer, ok := msg.(*protocol.AnswerMessage)
 	if !ok {
-		t.Fatalf("expected *AnswerMessage, got %T", msg)
+		t.Fatalf("expected *protocol.AnswerMessage, got %T", msg)
 	}
 	if gotAnswer.From != "peer-b" || gotAnswer.SDP != "v=0\r\nanswer-sdp" {
 		t.Errorf("unexpected answer: %+v", gotAnswer)
@@ -195,7 +197,7 @@ func TestClient_TwoPeers_ExchangeICECandidate(t *testing.T) {
 	receiveTimeout(t, clientA.Messages(), 2*time.Second) // drain B's join notification on A
 
 	// A sends an ICE candidate to B.
-	candidate := &ICECandidateMessage{
+	candidate := &protocol.ICECandidateMessage{
 		From:      "peer-a",
 		To:        "peer-b",
 		Candidate: "candidate:1 1 udp 2130706431 192.168.1.1 5000 typ host",
@@ -206,9 +208,9 @@ func TestClient_TwoPeers_ExchangeICECandidate(t *testing.T) {
 
 	// B receives the ICE candidate.
 	msg := receiveTimeout(t, clientB.Messages(), 2*time.Second)
-	gotCandidate, ok := msg.(*ICECandidateMessage)
+	gotCandidate, ok := msg.(*protocol.ICECandidateMessage)
 	if !ok {
-		t.Fatalf("expected *ICECandidateMessage, got %T", msg)
+		t.Fatalf("expected *protocol.ICECandidateMessage, got %T", msg)
 	}
 	if gotCandidate.From != "peer-a" || gotCandidate.Candidate != candidate.Candidate {
 		t.Errorf("unexpected ICE candidate: %+v", gotCandidate)
@@ -248,9 +250,9 @@ func TestClient_PeerLeft(t *testing.T) {
 	clientB.Close()
 
 	msg := receiveTimeout(t, clientA.Messages(), 2*time.Second)
-	peerLeft, ok := msg.(*PeerLeftMessage)
+	peerLeft, ok := msg.(*protocol.PeerLeftMessage)
 	if !ok {
-		t.Fatalf("expected *PeerLeftMessage, got %T", msg)
+		t.Fatalf("expected *protocol.PeerLeftMessage, got %T", msg)
 	}
 	if peerLeft.PeerID != "peer-b" {
 		t.Errorf("expected peer-b left, got %q", peerLeft.PeerID)
@@ -359,7 +361,7 @@ func TestClient_SendWithoutConnect(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	err := client.Send(ctx, &JoinMessage{PeerID: "peer-a", PublicKey: "key-a"})
+	err := client.Send(ctx, &protocol.JoinMessage{PeerID: "peer-a", PublicKey: "key-a"})
 	if err == nil {
 		t.Fatal("expected error sending without connection, got nil")
 	}
@@ -434,16 +436,16 @@ func TestClient_MultiplePeers_FullExchange(t *testing.T) {
 	receiveTimeout(t, clients[1].Messages(), 2*time.Second) // peer-2 join notification on peer-1
 
 	// peer-0 sends an offer to peer-2.
-	offer := &OfferMessage{From: "peer-0", To: "peer-2", SDP: "sdp-from-0-to-2"}
+	offer := &protocol.OfferMessage{From: "peer-0", To: "peer-2", SDP: "sdp-from-0-to-2"}
 	if err := clients[0].Send(ctx, offer); err != nil {
 		t.Fatalf("Send(offer) error: %v", err)
 	}
 
 	// peer-2 should receive it. peer-1 should NOT.
 	msg := receiveTimeout(t, clients[2].Messages(), 2*time.Second)
-	gotOffer, ok := msg.(*OfferMessage)
+	gotOffer, ok := msg.(*protocol.OfferMessage)
 	if !ok {
-		t.Fatalf("expected *OfferMessage, got %T", msg)
+		t.Fatalf("expected *protocol.OfferMessage, got %T", msg)
 	}
 	if gotOffer.From != "peer-0" || gotOffer.SDP != "sdp-from-0-to-2" {
 		t.Errorf("unexpected offer: %+v", gotOffer)

@@ -1,4 +1,10 @@
-package signaling
+// Package protocol defines the signaling protocol message types used by
+// riftgate clients and the Cloudflare Worker signaling server.
+//
+// All messages are JSON-encoded with a "type" discriminator field. This
+// package is intentionally free of external dependencies so it can be
+// compiled with both standard Go and TinyGo (for the Wasm worker).
+package protocol
 
 import (
 	"encoding/json"

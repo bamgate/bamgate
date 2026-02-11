@@ -117,7 +117,7 @@ In both cases, the application code is identical — WebRTC/ICE transparently pi
 
 - **Worker**: Handles HTTP auth, WebSocket upgrade, routes to correct Durable Object.
 - **Durable Object**: One per user/network. Maintains WebSocket connections from all peers. Relays SDP offers/answers and ICE candidates between peers. Also implements a TURN-like relay for data channel traffic when direct connection fails.
-- **Language**: Go, compiled to WebAssembly via **TinyGo**. TinyGo produces small Wasm binaries (~200KB–1MB compressed) that fit comfortably within Cloudflare's free-tier 3MB limit. Standard Go's `GOOS=js GOARCH=wasm` output is too large (2–4MB compressed for even a hello world). TinyGo lacks goroutine support in Wasm, but this is not an issue — CF Workers and Durable Objects are event-driven (one event handler runs at a time), so no concurrency primitives are needed on the server side. The `syumai/workers` library provides the HTTP/WebSocket glue for running Go on CF Workers.
+- **Language**: Go, compiled to WebAssembly via **TinyGo**. TinyGo produces small Wasm binaries (~200KB–1MB compressed) that fit comfortably within Cloudflare's free-tier 3MB limit. Standard Go's `GOOS=js GOARCH=wasm` output is too large (2–4MB compressed for even a hello world). TinyGo lacks goroutine support in Wasm, but this is not an issue — CF Workers and Durable Objects are event-driven (one event handler runs at a time), so no concurrency primitives are needed on the server side. A custom JavaScript shim (~180 lines) exports the Worker `fetch` handler and `SignalingRoom` Durable Object class, bridging WebSocket events to Go/Wasm callbacks via `syscall/js`. The Go hub logic manages peer state and message routing; JS handles the Cloudflare API surface (WebSocket Hibernation, `acceptWebSocket`, `getWebSockets`, `serializeAttachment`).
 - **Deployment**: Via Wrangler CLI or automated through the tool's `init` command using the CF API.
 
 ### Custom TURN-like Relay on Durable Objects
@@ -157,7 +157,8 @@ We build a simplified TURN relay rather than running a full `coturn` server. Thi
 - `nhooyr.io/websocket` — WebSocket client for signaling connection
 
 **Key libraries (worker — TinyGo→Wasm):**
-- `github.com/syumai/workers` — Go HTTP handler on Cloudflare Workers, Durable Object bindings
+- `syscall/js` — Go/Wasm bridge for JavaScript interop (stdlib, no external dependency)
+- Custom JS shim — Worker `fetch` handler, `SignalingRoom` DO class with WebSocket Hibernation API
 
 ### STUN (NAT Discovery)
 
@@ -438,7 +439,7 @@ Wire up the actual VPN tunnel on the client side.
 
 Now that the client protocol is proven, build the real signaling server.
 
-1. Set up Wrangler project with Worker + Durable Object (TinyGo → Wasm build pipeline, using `syumai/workers`)
+1. Set up Wrangler project with Worker + Durable Object (TinyGo → Wasm build pipeline, custom JS shim for DO WebSocket Hibernation API)
 2. Implement Worker: auth middleware, WebSocket upgrade, routing to correct DO
 3. Implement DO signaling: peer join/leave, SDP relay, ICE candidate relay
 4. Connect the existing Go signaling client to the deployed Worker — verify two remote peers can exchange signaling messages and establish a WebRTC data channel
@@ -524,7 +525,7 @@ Standard Go (`GOOS=js GOARCH=wasm`) was considered but rejected due to binary si
 
 The main TinyGo limitation — no goroutine support in Wasm — is not a problem for this project. Cloudflare Workers and Durable Objects are event-driven: each HTTP request or WebSocket message is processed as a separate synchronous event, and the DO runtime handles connection multiplexing. The signaling hub (receive JSON → decode → forward to target peer) and TURN relay (receive packet → decode → forward to peer's WebSocket) are both pure synchronous request-response logic per event.
 
-The `syumai/workers` library (1k+ stars) provides the Go→CF Workers glue, including `http.Handler` support and Durable Object bindings. Shared signaling protocol types live in a common Go package importable by both the client (standard Go) and the worker (TinyGo). TinyGo is compatible with most pure-Go packages, which is all the signaling types require.
+Shared signaling protocol types live in a common Go package (`pkg/protocol/`) importable by both the client (standard Go) and the worker (TinyGo). TinyGo is compatible with most pure-Go packages, which is all the signaling types require. The `syumai/workers` library was evaluated but does not support implementing Durable Objects — only calling DO stubs — so a custom JS shim is used instead.
 
 ### Double encryption (WireGuard + DTLS)?
 
@@ -560,7 +561,7 @@ WebRTC data channels are encrypted via DTLS. WireGuard adds its own encryption. 
 - [Durable Objects](https://developers.cloudflare.com/durable-objects/)
 - [Durable Objects WebSocket API](https://developers.cloudflare.com/durable-objects/api/websockets/)
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)
-- [syumai/workers](https://github.com/syumai/workers) — Go package to run HTTP servers on Cloudflare Workers (TinyGo→Wasm)
+- [syumai/workers](https://github.com/syumai/workers) — Go package to run HTTP servers on Cloudflare Workers (TinyGo→Wasm). Evaluated but not used — does not support implementing Durable Objects.
 
 ### Related Projects (Reference)
 - [Headscale](https://github.com/juanfont/headscale) — Open-source Tailscale control server

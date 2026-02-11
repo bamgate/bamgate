@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/kuuji/riftgate/pkg/protocol"
 )
 
 // ClientConfig holds configuration for a signaling Client.
@@ -22,6 +25,10 @@ type ClientConfig struct {
 
 	// PublicKey is this client's WireGuard public key (base64-encoded).
 	PublicKey string
+
+	// AuthToken is the bearer token for authenticating with the signaling server.
+	// If empty, no Authorization header is sent.
+	AuthToken string
 
 	// Logger is the structured logger to use. If nil, slog.Default() is used.
 	Logger *slog.Logger
@@ -62,7 +69,7 @@ type ReconnectConfig struct {
 type Client struct {
 	cfg    ClientConfig
 	log    *slog.Logger
-	msgCh  chan Message
+	msgCh  chan protocol.Message
 	done   chan struct{}
 	cancel context.CancelFunc
 
@@ -87,7 +94,7 @@ func NewClient(cfg ClientConfig) *Client {
 	return &Client{
 		cfg:   cfg,
 		log:   log,
-		msgCh: make(chan Message, bufSize),
+		msgCh: make(chan protocol.Message, bufSize),
 		done:  make(chan struct{}),
 	}
 }
@@ -95,7 +102,7 @@ func NewClient(cfg ClientConfig) *Client {
 // Messages returns a read-only channel that delivers incoming signaling messages.
 // The channel is closed when the client is closed or the context is cancelled
 // and reconnection is exhausted.
-func (c *Client) Messages() <-chan Message {
+func (c *Client) Messages() <-chan protocol.Message {
 	return c.msgCh
 }
 
@@ -134,8 +141,8 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // Send sends a signaling message to the server.
-func (c *Client) Send(ctx context.Context, msg Message) error {
-	data, err := Marshal(msg)
+func (c *Client) Send(ctx context.Context, msg protocol.Message) error {
+	data, err := protocol.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshaling message: %w", err)
 	}
@@ -178,7 +185,16 @@ func (c *Client) dial(ctx context.Context) error {
 	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
 	defer dialCancel()
 
-	conn, _, err := websocket.Dial(dialCtx, c.cfg.ServerURL, nil)
+	var opts *websocket.DialOptions
+	if c.cfg.AuthToken != "" {
+		opts = &websocket.DialOptions{
+			HTTPHeader: http.Header{
+				"Authorization": []string{"Bearer " + c.cfg.AuthToken},
+			},
+		}
+	}
+
+	conn, _, err := websocket.Dial(dialCtx, c.cfg.ServerURL, opts)
 	if err != nil {
 		return err
 	}
@@ -192,7 +208,7 @@ func (c *Client) dial(ctx context.Context) error {
 
 // sendJoin sends the initial join message on the current connection.
 func (c *Client) sendJoin(ctx context.Context) error {
-	return c.Send(ctx, &JoinMessage{
+	return c.Send(ctx, &protocol.JoinMessage{
 		PeerID:    c.cfg.PeerID,
 		PublicKey: c.cfg.PublicKey,
 	})
@@ -255,7 +271,7 @@ func (c *Client) readMessages(ctx context.Context) error {
 			return err
 		}
 
-		msg, err := Unmarshal(data)
+		msg, err := protocol.Unmarshal(data)
 		if err != nil {
 			c.log.Warn("ignoring malformed message", "error", err)
 			continue

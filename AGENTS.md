@@ -9,7 +9,8 @@ IP. The relay/signaling infrastructure runs on Cloudflare Workers (free tier).
 The entire project is written in **Go**:
 - **Go client** — CLI + shared core library (Linux + Android via gomobile), built with standard Go.
 - **Go Wasm worker** — Cloudflare Worker + Durable Object (signaling + TURN relay),
-  compiled to WebAssembly via **TinyGo**. Uses `syumai/workers` for CF Workers integration.
+  compiled to WebAssembly via **TinyGo**. Custom JS shim bridges WebSocket Hibernation
+  API events to Go/Wasm callbacks via `syscall/js`.
 
 See `ARCHITECTURE.md` for the full design document.
 See `STATUS.md` for current project progress, what's been completed, and what to work on next.
@@ -140,6 +141,7 @@ npx wrangler deploy
 
 ```
 cmd/riftgate/          # CLI entry point (main package)
+cmd/riftgate-hub/      # Standalone signaling hub for local/LAN testing
 internal/
   config/              # TOML config management, key generation
   signaling/           # WebSocket client to CF Worker
@@ -147,7 +149,11 @@ internal/
   tunnel/              # wireguard-go device + TUN interface
   bridge/              # TUN <-> WebRTC data channel packet forwarding
   agent/               # Top-level orchestrator tying everything together
+pkg/protocol/          # Shared signaling protocol types (TinyGo-compatible)
 worker/                # Cloudflare Worker + Durable Object (Go -> Wasm)
+  src/worker.mjs       # JS glue: Worker fetch + DO class + Wasm bridge
+  hub.go               # Go signaling hub logic (syscall/js callbacks)
+  main.go              # TinyGo Wasm entry point
 ```
 
 ## Key Libraries
@@ -160,7 +166,7 @@ worker/                # Cloudflare Worker + Durable Object (Go -> Wasm)
 | `golang.zx2c4.com/wireguard/tun` | TUN device management |
 | `nhooyr.io/websocket` | Signaling WebSocket connection |
 | `github.com/BurntSushi/toml` | TOML config parsing |
-| `github.com/syumai/workers` | Go HTTP handler on CF Workers (TinyGo->Wasm) |
+| `github.com/syumai/workers` | Evaluated but not used — does not support Durable Objects |
 
 ## Critical Design Constraints
 
