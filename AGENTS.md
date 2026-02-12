@@ -54,9 +54,13 @@ goimports -w .
 
 ### Cloudflare Worker (TinyGo -> Wasm)
 
+**TinyGo binary location:** `~/.local/tinygo/bin/tinygo` (v0.40.1). The system
+`tinygo` at `/usr/bin/tinygo` is an older version (0.39.0) that lacks `wasm-opt`
+— always use the local install.
+
 ```bash
 # Build Wasm binary (from worker/ directory)
-tinygo build -o ./build/app.wasm -target wasm -no-debug ./...
+~/.local/tinygo/bin/tinygo build -o ./build/app.wasm -target wasm -no-debug ./...
 
 # Dev server
 npx wrangler dev

@@ -138,6 +138,7 @@ type DeployWorkerInput struct {
 	Modules    []WorkerModule
 	MainModule string // Must match one of the module names.
 	AuthToken  string // The riftgate auth token to set as a plain text binding.
+	TURNSecret string // Shared secret for TURN credential generation/validation.
 
 	// IncludeMigration controls whether the DO migration is included.
 	// Set to true on first deploy, false on re-deploys.
@@ -165,6 +166,11 @@ func (c *Client) DeployWorker(ctx context.Context, input DeployWorkerInput) erro
 				"type": "plain_text",
 				"name": "AUTH_TOKEN",
 				"text": input.AuthToken,
+			},
+			{
+				"type": "plain_text",
+				"name": "TURN_SECRET",
+				"text": input.TURNSecret,
 			},
 		},
 	}
@@ -305,6 +311,16 @@ type WorkerBinding struct {
 func GetAuthTokenFromBindings(bindings []WorkerBinding) (string, bool) {
 	for _, b := range bindings {
 		if b.Name == "AUTH_TOKEN" && b.Type == "plain_text" {
+			return b.Text, true
+		}
+	}
+	return "", false
+}
+
+// GetTURNSecretFromBindings extracts the TURN_SECRET value from worker bindings.
+func GetTURNSecretFromBindings(bindings []WorkerBinding) (string, bool) {
+	for _, b := range bindings {
+		if b.Name == "TURN_SECRET" && b.Type == "plain_text" {
 			return b.Text, true
 		}
 	}

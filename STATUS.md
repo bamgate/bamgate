@@ -1,12 +1,13 @@
 # riftgate — Project Status
 
-Last updated: 2026-02-12 (session 4)
+Last updated: 2026-02-12 (session 6)
 
 ## Current Phase
 
 **Phase 1: Go Client Core (Signaling + WebRTC)** — Complete
 **Phase 2: WireGuard Integration** — Complete (tested end-to-end, tunnel working)
 **Phase 3: Cloudflare Worker (Signaling Server)** — Complete (deployed, multi-peer tested)
+**Phase 4: TURN Relay on Durable Objects** — Complete (implemented, needs deploy + manual test)
 **Phase 5: CLI Polish & Resilience** — Complete
 **Phase 5.5: UX & Operational Improvements** — Complete
 **Phase 6: Automated Setup & Deployment** — Complete
@@ -75,10 +76,13 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 - **Worker invite/network-info endpoints** (`worker/src/worker.mjs`): `POST /invite` (authenticated) creates invite with random 8-char code, 10-min expiry, stored in DO SQLite. `GET /invite/{code}` (unauthenticated) redeems invite, returns server URL + auth token + auto-assigned address. `GET /network-info` (authenticated) returns subnet, assigned devices, next available address. SQLite tables: `invites`, `devices`, `network`.
 - **Auto tunnel address assignment**: Worker tracks assigned addresses in SQLite `devices` table. Computes next available IP from subnet (default `10.0.0.0/24`). First device gets `.1`, subsequent devices get next free address. Addresses registered on join and on invite redemption.
 - **Config `[cloudflare]` section** (`internal/config/config.go`): New `CloudflareConfig` struct with `api_token`, `account_id`, `worker_name`. Stored in TOML config for re-deploy and management operations.
+- **TURN relay over WebSocket** (`internal/turn/`, `worker/turn.go`, `worker/stun/`): Full TURN relay implementation on Cloudflare Workers Durable Objects. Enables connectivity through symmetric NAT (e.g., mobile tethering) where direct ICE/STUN hole punching fails. Architecture: client-side WebSocket proxy dialer (`internal/turn/dialer.go`) intercepts pion/ice's TURN TCP connections and routes them over `wss://worker/turn`; server-side TURN state machine (`worker/turn.go`) handles Allocate (two-phase 401 auth dance), Refresh, CreatePermission, ChannelBind, Send/Data indications, and ChannelData relay between peers via virtual relay addresses. Minimal STUN/TURN message parser (`worker/stun/stun.go`, ~500 lines) written from scratch for TinyGo/Wasm compatibility — handles message encoding/decoding, XOR address family, MESSAGE-INTEGRITY (HMAC-SHA1), FINGERPRINT (CRC32). TURN credential generation uses HMAC-SHA1 REST API convention (`internal/turn/credentials.go`): `username=<expiry>:<peerID>`, `password=base64(HMAC-SHA1(secret,username))`. Agent automatically configures TURN when `turn_secret` is present in config — generates credentials, sets up proxy dialer via `webrtc.SettingEngine.SetICEProxyDialer()`, and adds TURN server to ICE config. ICE tries direct candidates first, falls back to TURN relay transparently. Binary WebSocket support added to worker JS shim for STUN/TURN message forwarding (`jsSendBinary`, `goOnTURNMessage`). TURN secret generated during `riftgate setup`, deployed as plain text binding alongside AUTH_TOKEN, and included in invite redemption responses. Embedded worker assets rebuilt (576KB Wasm binary).
+- **TURN credential helpers** (`internal/turn/credentials.go`): `GenerateCredentials()` and `ValidateCredentials()` for TURN REST API time-limited credentials with HMAC-SHA1. `DeriveAuthKey()` for RFC 5389 long-term credential MESSAGE-INTEGRITY key derivation. 9 tests.
+- **WebSocket proxy dialer** (`internal/turn/dialer.go`): `WSProxyDialer` implementing `proxy.Dialer` — opens WebSocket to `/turn` endpoint, wraps with `websocket.NetConn()`, returns `*net.TCPAddr`-compatible `net.Conn` wrapper (required by pion/ice's forced type assertion). `TURNServerURL()` and `TURNWebSocketURL()` derive TURN URLs from signaling server URL. 13 tests.
 
 ## Phase 5 Implementation Details
 
-Six work items, ordered by dependency. Skipping Phase 4 (TURN relay) for now — direct connections work for most NAT types.
+Six work items, ordered by dependency.
 
 ### 5.1 Subcommand Framework (Small)
 
@@ -205,9 +209,9 @@ Systemd unit file for running `riftgate up` as a persistent home agent.
 
 ## What's Next
 
-1. **macOS support — launchd integration** — `up -d`, `down`, and `install --systemd` equivalents for macOS using launchd plists. See remaining items below.
-2. **Phase 4: TURN relay** — For peers behind symmetric NAT where direct ICE fails. Options: Cloudflare Worker-based TURN relay or external TURN server.
-3. **Rate limiting** — Add request rate limiting to the Worker `/connect` endpoint to prevent auth token brute-force and request quota abuse.
+1. **Deploy and test TURN relay** — Redeploy the Cloudflare Worker with TURN support, set `TURN_SECRET`, and test end-to-end with phone tethering (symmetric NAT). Verify `riftgate status` shows `ice_type: relay`.
+2. **macOS support — launchd integration** — `up -d`, `down`, and `install --systemd` equivalents for macOS using launchd plists. See remaining items below.
+3. **Rate limiting** — Add request rate limiting to the Worker `/connect` and `/turn` endpoints to prevent abuse.
 4. **Android client** — gomobile build of the core library for Android.
 5. **End-to-end testing with systemd** — Verify the full `install --systemd` → `up -d` → `status` → `down` workflow on a fresh machine.
 6. **macOS end-to-end testing** — Test `sudo riftgate setup` → `sudo riftgate up` → `riftgate status` on a real Mac.
@@ -248,16 +252,18 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 |---------|-------|--------|
 | `cmd/riftgate` | main.go, cmd_up.go, cmd_down.go, cmd_setup.go, cmd_invite.go, cmd_init.go, cmd_init_test.go, cmd_status.go, cmd_genkey.go, cmd_install.go | **Implemented + tested** — Cobra subcommands: setup, up, down, invite, status, genkey, install (init deprecated) |
 | `cmd/riftgate-hub` | main.go | **Implemented** — standalone signaling server |
-| `internal/agent` | agent.go, agent_test.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server |
+| `internal/agent` | agent.go, agent_test.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration |
 | `internal/control` | server.go, server_test.go | **Implemented + tested** — Unix socket status API |
 | `internal/bridge` | bridge.go, bridge_test.go | **Implemented + tested** |
 | `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** — Added CloudflareConfig section |
 | `internal/signaling` | client.go, hub.go, client_test.go | **Implemented + tested** |
 | `pkg/protocol` | protocol.go, protocol_test.go | **Implemented + tested** |
 | `internal/tunnel` | config.go, device.go, tun.go, tun_linux.go, tun_darwin.go, iface.go, netlink.go (linux), netlink_darwin.go, nat.go (linux), nat_darwin.go, config_test.go, netlink_test.go | **Implemented + tested** — Cross-platform: Linux (netlink + nftables), macOS (ifconfig/route/sysctl + pfctl) |
-| `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** |
-| `internal/deploy` | cloudflare.go, assets.go, assets/ | **Implemented** — Cloudflare API client, embedded worker assets |
-| `worker/` | hub.go, main.go, src/worker.mjs | **Implemented + deployed** — TinyGo 414KB Wasm, Cloudflare Workers free tier. Invite + network-info endpoints. |
+| `internal/turn` | credentials.go, credentials_test.go, dialer.go, dialer_test.go | **Implemented + tested** — TURN credential generation/validation, WebSocket proxy dialer for pion/ice |
+| `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** — Added optional `webrtc.API` support for proxy dialer |
+| `internal/deploy` | cloudflare.go, assets.go, assets/ | **Implemented** — Cloudflare API client, embedded worker assets. TURN_SECRET binding support. |
+| `worker/` | hub.go, turn.go, main.go, src/worker.mjs | **Implemented** — TinyGo 576KB Wasm, Cloudflare Workers free tier. Signaling + TURN relay + invite + network-info endpoints. |
+| `worker/stun` | stun.go, stun_test.go | **Implemented + tested** — Minimal STUN/TURN message parser/builder (TinyGo-compatible). 20 tests. |
 
 ## Dependencies
 
@@ -272,12 +278,24 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 | `golang.org/x/sys` | v0.41.0 | Netlink syscalls for TUN configuration, IP forwarding (non-root) |
 | `golang.zx2c4.com/wireguard` | v0.0.0-20250521 | Userspace WireGuard device + TUN interface |
 
+## Releases
+
+| Version | Date | Highlights |
+|---------|------|------------|
+| v1.1.1 | 2026-02-12 | Fix macOS TUN routing — add subnet route after address assignment |
+| v1.1.0 | 2026-02-12 | macOS (darwin) support for amd64 + arm64 |
+| v1.0.0 | 2026-02-12 | First major release — automated setup, daemon mode, subnet routing with forwarding/NAT |
+| v0.3.0 | 2026-02-11 | Fix AllowedIPs routing, per-peer /32 addresses via signaling |
+| v0.2.0 | 2026-02-11 | End-to-end LAN tunnel verified, 3 critical bug fixes |
+| v0.1.0 | 2026-02-11 | Initial pre-release — signaling + WebRTC + WireGuard integration |
+
 ## Open Questions / Decisions
 
 - None at this time.
 
 ## Changelog
 
+- **2026-02-12 (session 6)**: Phase 4 — TURN relay on Cloudflare Workers. Full TURN-over-WebSocket implementation enabling connectivity through symmetric NAT (mobile tethering, restrictive corporate firewalls). Client-side: WebSocket proxy dialer (`internal/turn/dialer.go`) hooks into pion/ice via `SettingEngine.SetICEProxyDialer()` — ICE automatically tries direct candidates first and falls back to TURN relay transparently. TURN credential generation uses HMAC-SHA1 REST API convention with time-limited credentials (`internal/turn/credentials.go`). Agent automatically configures TURN when `turn_secret` is in config. Server-side: TURN state machine in Go/Wasm (`worker/turn.go`) handles the full Allocate two-phase auth dance (401 challenge → authenticated retry), Refresh, CreatePermission, ChannelBind, Send/Data indications, and ChannelData fast-path relay. Virtual relay addressing — the DO assigns synthetic relay addresses and routes packets between peers' WebSocket connections. Minimal STUN message parser (`worker/stun/stun.go`, ~500 lines) written from scratch for TinyGo compatibility — handles message encoding/decoding, XOR address family, MESSAGE-INTEGRITY (HMAC-SHA1), FINGERPRINT (CRC32). Worker JS shim updated with binary WebSocket support (`jsSendBinary`, `goOnTURNMessage`) and `/turn` endpoint. TURN secret generation integrated into `riftgate setup` and invite flow. Wasm binary grew from 414KB to 576KB. All existing tests pass; 42 new tests across credentials (9), dialer (13), and STUN parser (20).
 - **2026-02-12 (session 5)**: macOS (darwin) support — phase 1. The project now compiles and runs on macOS (`GOOS=darwin`). Split all Linux-specific code into platform files with `//go:build` tags: `netlink.go` → Linux netlink syscalls, `netlink_darwin.go` → `ifconfig`/`route`/`sysctl` shell commands for interface management. `nat.go` → Linux nftables, `nat_darwin.go` → macOS PF (`pfctl`) with `com.riftgate` anchor for NAT masquerade. Extracted cross-platform `FindInterfaceForSubnet()` to `iface.go`. Added `tun_linux.go` (`DefaultTUNName = "riftgate0"`) and `tun_darwin.go` (`DefaultTUNName = "utun"` — kernel auto-assigns). Agent uses `tunnel.DefaultTUNName` instead of hardcoded name. Control socket path uses `/var/run/riftgate/` on macOS. CLI commands (`setup`, `install`, `up` foreground) work on macOS with clear messages for not-yet-implemented features (`up -d`, `down` — launchd integration pending). All existing Linux tests pass. Cross-compiles cleanly for `darwin/amd64` and `darwin/arm64`.
 - **2026-02-12 (session 4)**: Automatic IP forwarding and NAT for advertised subnet routes. Added `--accept-routes` opt-in flag — remote subnet routes are no longer installed by default to prevent conflicts when both sides share the same LAN subnet. When a device advertises routes (e.g., `192.168.1.0/24`), remote peers could reach the device itself but not other hosts on the advertised subnet — packets were dropped because Linux doesn't forward between interfaces by default and LAN devices couldn't reply without NAT. Riftgate now automatically enables per-interface IPv4 forwarding via netlink `RTM_SETLINK` with `IFLA_AF_SPEC` > `IFLA_INET_CONF` (avoids `/proc/sys` writes that require `CAP_DAC_OVERRIDE` or root) and sets up nftables MASQUERADE rules using `github.com/google/nftables` (pure Go netlink library, no iptables/nft binaries needed) in a dedicated `riftgate` nftables table. `FindInterfaceForSubnet()` auto-detects the outgoing LAN interface. Previous forwarding state is saved and restored on shutdown. No new capabilities needed — existing `CAP_NET_ADMIN` covers both netlink forwarding and nftables.
 - **2026-02-12 (session 3)**: Automated setup & deployment. New `riftgate setup` command — single interactive wizard that deploys the Cloudflare Worker signaling server, configures the device, and installs the binary with capabilities. Two setup paths: (1) Cloudflare API token — deploys worker on first run, detects existing worker and retrieves config on subsequent runs; (2) invite code — no CF account needed on second device. New `riftgate invite` command generates short-lived invite codes (10 min, single-use) for adding devices to the network. Worker updated with `/invite` (create/redeem) and `/network-info` endpoints using Durable Object SQLite for invite storage and automatic tunnel address assignment. Auth token stored as plain text binding (readable via CF API). Worker assets embedded in Go binary via `//go:embed` (~438KB). New `internal/deploy/` package with Cloudflare REST API v4 client (token verify, accounts, subdomain, worker upload with multipart modules + DO bindings + migrations, worker settings). Config extended with `[cloudflare]` section (api_token, account_id, worker_name). `riftgate init` deprecated in favor of `setup`.

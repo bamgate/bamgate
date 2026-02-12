@@ -5,8 +5,12 @@
 // 2. The SignalingRoom Durable Object class (WebSocket Hibernation API)
 //
 // The DO class bridges WebSocket events to Go/Wasm callbacks:
-//   JS → Go: goOnJoin(wsId, peerId, publicKey, address, routesJSON), goOnMessage(wsId, json), goOnLeave(wsId)
-//   Go → JS: jsSend(wsId, json)
+//   Signaling:
+//     JS → Go: goOnJoin(wsId, peerId, publicKey, address, routesJSON), goOnMessage(wsId, json), goOnLeave(wsId)
+//     Go → JS: jsSend(wsId, json)
+//   TURN relay:
+//     JS → Go: goOnTURNMessage(wsId, Uint8Array), goOnTURNClose(wsId)
+//     Go → JS: jsSendBinary(wsId, Uint8Array), jsTURNSecret()
 
 import "./wasm_exec.js";
 import wasmModule from "./app.wasm";
@@ -24,7 +28,7 @@ export default {
       });
     }
 
-    // WebSocket connect endpoint.
+    // WebSocket connect endpoint (signaling).
     if (url.pathname === "/connect") {
       // Validate bearer token.
       const authToken = env.AUTH_TOKEN;
@@ -36,11 +40,34 @@ export default {
       }
 
       // Route to the Durable Object. All peers join the same room for now.
-      // In the future, this could be parameterized by network name.
       const roomName = url.searchParams.get("room") || "default";
       const id = env.SIGNALING_ROOM.idFromName(roomName);
       const stub = env.SIGNALING_ROOM.get(id);
       return stub.fetch(request);
+    }
+
+    // TURN relay WebSocket endpoint.
+    if (url.pathname === "/turn") {
+      // Validate bearer token.
+      const authToken = env.AUTH_TOKEN;
+      if (authToken) {
+        const authHeader = request.headers.get("Authorization");
+        if (!authHeader || authHeader !== `Bearer ${authToken}`) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+      }
+
+      // Route to the same Durable Object as signaling.
+      const roomName = url.searchParams.get("room") || "default";
+      const id = env.SIGNALING_ROOM.idFromName(roomName);
+      const stub = env.SIGNALING_ROOM.get(id);
+
+      // Forward with a header to mark this as a TURN connection.
+      const turnReq = new Request(request.url, {
+        method: request.method,
+        headers: new Headers([...request.headers.entries(), ["X-Riftgate-Turn", "1"]]),
+      });
+      return stub.fetch(turnReq);
     }
 
     // Invite creation (authenticated).
@@ -289,6 +316,7 @@ export class SignalingRoom {
     return new Response(JSON.stringify({
       server_url: invite.server_url,
       auth_token: invite.auth_token,
+      turn_secret: this.env.TURN_SECRET || "",
       address: nextAddress,
       subnet: invite.subnet,
     }), {
@@ -320,10 +348,22 @@ export class SignalingRoom {
     }
 
     this.goReadyPromise = new Promise((resolve, reject) => {
-      // Set up the Go → JS send function before instantiating Wasm.
+      // Set up the Go → JS send functions before instantiating Wasm.
       const self = this;
+
+      // Send JSON text to a signaling WebSocket.
       globalThis.jsSend = (wsId, jsonStr) => {
         self._sendToWebSocket(wsId, jsonStr);
+      };
+
+      // Send binary data to a TURN WebSocket.
+      globalThis.jsSendBinary = (wsId, uint8Array) => {
+        self._sendBinaryToWebSocket(wsId, uint8Array);
+      };
+
+      // Return the TURN_SECRET environment variable.
+      globalThis.jsTURNSecret = () => {
+        return self.env.TURN_SECRET || "";
       };
 
       // Signal from Go that it has registered all callbacks.
@@ -357,11 +397,15 @@ export class SignalingRoom {
     let maxWsId = this.nextWsId;
     for (const ws of sockets) {
       const attachment = ws.deserializeAttachment();
-      if (!attachment || !attachment.joined) continue;
+      if (!attachment) continue;
       if (attachment.wsId >= maxWsId) {
         maxWsId = attachment.wsId + 1;
       }
-      globalThis.goOnRehydrate(attachment.wsId, attachment.peerId, attachment.publicKey || "", attachment.address || "", JSON.stringify(attachment.routes || []));
+      // Only rehydrate signaling peers (not TURN connections — TURN state
+      // is transient and does not survive hibernation).
+      if (attachment.joined) {
+        globalThis.goOnRehydrate(attachment.wsId, attachment.peerId, attachment.publicKey || "", attachment.address || "", JSON.stringify(attachment.routes || []));
+      }
     }
     this.nextWsId = maxWsId;
   }
@@ -378,12 +422,25 @@ export class SignalingRoom {
     return null;
   }
 
-  // Send a JSON message to a specific WebSocket by wsId.
+  // Send a JSON text message to a specific WebSocket by wsId.
   _sendToWebSocket(wsId, jsonStr) {
     const ws = this._findWebSocket(wsId);
     if (ws) {
       try {
         ws.send(jsonStr);
+      } catch {
+        // WebSocket may be closing; ignore send errors.
+      }
+    }
+  }
+
+  // Send binary data to a specific WebSocket by wsId.
+  _sendBinaryToWebSocket(wsId, uint8Array) {
+    const ws = this._findWebSocket(wsId);
+    if (ws) {
+      try {
+        // Convert Uint8Array to ArrayBuffer for WebSocket binary send.
+        ws.send(uint8Array.buffer.slice(uint8Array.byteOffset, uint8Array.byteOffset + uint8Array.byteLength));
       } catch {
         // WebSocket may be closing; ignore send errors.
       }
@@ -419,8 +476,12 @@ export class SignalingRoom {
 
     // Assign a unique wsId to this WebSocket.
     const wsId = this.nextWsId++;
+
+    // Determine if this is a TURN connection or a signaling connection.
+    const isTurn = request.headers.get("X-Riftgate-Turn") === "1";
+
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ wsId, joined: false });
+    server.serializeAttachment({ wsId, joined: false, isTurn });
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -434,6 +495,23 @@ export class SignalingRoom {
 
     const wsId = attachment.wsId;
 
+    // TURN WebSocket connections handle binary STUN/TURN messages.
+    if (attachment.isTurn) {
+      // All TURN messages are binary — pass raw bytes to Go.
+      let data;
+      if (typeof message === "string") {
+        // Unexpected text message on a TURN connection — ignore.
+        return;
+      } else if (message instanceof ArrayBuffer) {
+        data = new Uint8Array(message);
+      } else {
+        data = new Uint8Array(message);
+      }
+      globalThis.goOnTURNMessage(wsId, data);
+      return;
+    }
+
+    // Signaling WebSocket connections handle JSON text messages.
     if (!attachment.joined) {
       // First message must be a join.
       let msg;
@@ -451,6 +529,7 @@ export class SignalingRoom {
       ws.serializeAttachment({
         wsId,
         joined: true,
+        isTurn: false,
         peerId: msg.peerId,
         publicKey: msg.publicKey || "",
         address: msg.address || "",
@@ -467,7 +546,7 @@ export class SignalingRoom {
       return;
     }
 
-    // Forward subsequent messages to Go hub for routing.
+    // Forward subsequent signaling messages to Go hub for routing.
     globalThis.goOnMessage(wsId, typeof message === "string" ? message : new TextDecoder().decode(message));
   }
 
@@ -476,7 +555,11 @@ export class SignalingRoom {
     await this.ensureGo();
 
     const attachment = ws.deserializeAttachment();
-    if (attachment && attachment.joined) {
+    if (!attachment) return;
+
+    if (attachment.isTurn) {
+      globalThis.goOnTURNClose(attachment.wsId);
+    } else if (attachment.joined) {
       globalThis.goOnLeave(attachment.wsId);
     }
 
@@ -493,7 +576,11 @@ export class SignalingRoom {
     await this.ensureGo();
 
     const attachment = ws.deserializeAttachment();
-    if (attachment && attachment.joined) {
+    if (!attachment) return;
+
+    if (attachment.isTurn) {
+      globalThis.goOnTURNClose(attachment.wsId);
+    } else if (attachment.joined) {
       globalThis.goOnLeave(attachment.wsId);
     }
 

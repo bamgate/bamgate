@@ -13,6 +13,11 @@ type PeerConfig struct {
 	// ICE contains the STUN/TURN server configuration.
 	ICE ICEConfig
 
+	// API is an optional custom webrtc.API instance (e.g. with a SettingEngine
+	// that has a proxy dialer configured for TURN-over-WebSocket). If nil,
+	// the default pion API is used.
+	API *webrtc.API
+
 	// LocalID is this peer's identifier (used for logging).
 	LocalID string
 
@@ -61,9 +66,19 @@ func NewPeer(cfg PeerConfig) (*Peer, error) {
 	}
 	log = log.With("local_id", cfg.LocalID, "remote_id", cfg.RemoteID)
 
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
+	rtcConfig := webrtc.Configuration{
 		ICEServers: cfg.ICE.pionICEServers(),
-	})
+	}
+
+	var (
+		pc  *webrtc.PeerConnection
+		err error
+	)
+	if cfg.API != nil {
+		pc, err = cfg.API.NewPeerConnection(rtcConfig)
+	} else {
+		pc, err = webrtc.NewPeerConnection(rtcConfig)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("creating peer connection: %w", err)
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/kuuji/riftgate/internal/control"
 	"github.com/kuuji/riftgate/internal/signaling"
 	"github.com/kuuji/riftgate/internal/tunnel"
+	"github.com/kuuji/riftgate/internal/turn"
 	rtcpkg "github.com/kuuji/riftgate/internal/webrtc"
 	"github.com/kuuji/riftgate/pkg/protocol"
 )
@@ -376,8 +377,45 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 		STUNServers: a.cfg.STUN.Servers,
 	}
 
+	// Configure TURN relay if a shared secret is available.
+	var rtcAPI *webrtc.API
+	if a.cfg.Network.TURNSecret != "" {
+		turnURL, err := turn.TURNServerURL(a.cfg.Network.ServerURL)
+		if err != nil {
+			a.log.Warn("failed to derive TURN URL, proceeding without TURN", "error", err)
+		} else {
+			turnWSURL, err := turn.TURNWebSocketURL(a.cfg.Network.ServerURL)
+			if err != nil {
+				a.log.Warn("failed to derive TURN WebSocket URL, proceeding without TURN", "error", err)
+			} else {
+				username, password := turn.GenerateCredentials(a.cfg.Network.TURNSecret, a.cfg.Device.Name, 0)
+				iceConfig.TURNServers = []rtcpkg.TURNServer{{
+					URL:        turnURL,
+					Username:   username,
+					Credential: password,
+				}}
+
+				// Set up the WebSocket proxy dialer so pion/ice routes
+				// TURN traffic through our Cloudflare Worker.
+				se := webrtc.SettingEngine{}
+				se.SetICEProxyDialer(&turn.WSProxyDialer{
+					TURNEndpoint: turnWSURL,
+					AuthToken:    a.cfg.Network.AuthToken,
+				})
+				rtcAPI = webrtc.NewAPI(webrtc.WithSettingEngine(se))
+
+				a.log.Info("TURN relay configured",
+					"turn_url", turnURL,
+					"turn_ws_url", turnWSURL,
+					"turn_username", username,
+				)
+			}
+		}
+	}
+
 	peer, err := rtcpkg.NewPeer(rtcpkg.PeerConfig{
 		ICE:      iceConfig,
+		API:      rtcAPI,
 		LocalID:  a.cfg.Device.Name,
 		RemoteID: peerID,
 		Logger:   a.log,

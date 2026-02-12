@@ -198,10 +198,11 @@ func setupWithInvite(ctx context.Context, scanner *bufio.Scanner) (*config.Confi
 	}
 
 	var invite struct {
-		ServerURL string `json:"server_url"`
-		AuthToken string `json:"auth_token"`
-		Address   string `json:"address"`
-		Subnet    string `json:"subnet"`
+		ServerURL  string `json:"server_url"`
+		AuthToken  string `json:"auth_token"`
+		TURNSecret string `json:"turn_secret"`
+		Address    string `json:"address"`
+		Subnet     string `json:"subnet"`
 	}
 	if err := json.Unmarshal(body, &invite); err != nil {
 		return nil, fmt.Errorf("parsing invite response: %w", err)
@@ -220,6 +221,7 @@ func setupWithInvite(ctx context.Context, scanner *bufio.Scanner) (*config.Confi
 	cfg := config.DefaultConfig()
 	cfg.Network.ServerURL = wsURL
 	cfg.Network.AuthToken = invite.AuthToken
+	cfg.Network.TURNSecret = invite.TURNSecret
 	cfg.Device.Address = invite.Address
 
 	return cfg, nil
@@ -281,11 +283,12 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 	}
 
 	var authToken string
+	var turnSecret string
 
 	if exists {
 		fmt.Fprintf(os.Stderr, "  Worker %q already deployed at %s\n", workerName, deploy.WorkerURL(workerName, subdomain))
 
-		// Try to read back the auth token from bindings.
+		// Try to read back the auth token and TURN secret from bindings.
 		bindings, err := cfClient.GetWorkerBindings(ctx, account.ID, workerName)
 		if err != nil {
 			return nil, fmt.Errorf("reading worker bindings: %w", err)
@@ -301,6 +304,14 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 			if authToken == "" {
 				return nil, fmt.Errorf("auth token is required")
 			}
+		}
+
+		ts, ok := deploy.GetTURNSecretFromBindings(bindings)
+		if ok && ts != "" {
+			turnSecret = ts
+			fmt.Fprintf(os.Stderr, "  TURN secret retrieved\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "  Warning: TURN secret not found in worker bindings (TURN relay disabled).\n")
 		}
 
 		// Get network info for auto-address assignment.
@@ -322,6 +333,7 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 		cfg.Cloudflare.WorkerName = workerName
 		cfg.Network.ServerURL = deploy.WorkerWSURL(workerName, subdomain)
 		cfg.Network.AuthToken = authToken
+		cfg.Network.TURNSecret = turnSecret
 		cfg.Device.Address = address
 		return cfg, nil
 	}
@@ -333,10 +345,14 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 
 	workerName = promptString(scanner, "Worker name", "riftgate")
 
-	// Generate auth token.
+	// Generate auth token and TURN secret.
 	authToken, err = generateAuthToken()
 	if err != nil {
 		return nil, fmt.Errorf("generating auth token: %w", err)
+	}
+	turnSecret, err = generateAuthToken() // Same format works for TURN secret.
+	if err != nil {
+		return nil, fmt.Errorf("generating TURN secret: %w", err)
 	}
 
 	// Load embedded worker modules.
@@ -352,6 +368,7 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 		Modules:          modules,
 		MainModule:       "worker.mjs",
 		AuthToken:        authToken,
+		TURNSecret:       turnSecret,
 		IncludeMigration: true,
 	}); err != nil {
 		return nil, fmt.Errorf("deploying worker: %w", err)
@@ -365,7 +382,7 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 
 	workerURL := deploy.WorkerURL(workerName, subdomain)
 	fmt.Fprintf(os.Stderr, "  Worker deployed: %s\n", workerURL)
-	fmt.Fprintf(os.Stderr, "  Auth token generated and configured\n")
+	fmt.Fprintf(os.Stderr, "  Auth token and TURN secret generated and configured\n")
 
 	// First device gets the first address in the subnet.
 	address := "10.0.0.1/24"
@@ -377,6 +394,7 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 	cfg.Cloudflare.WorkerName = workerName
 	cfg.Network.ServerURL = deploy.WorkerWSURL(workerName, subdomain)
 	cfg.Network.AuthToken = authToken
+	cfg.Network.TURNSecret = turnSecret
 	cfg.Device.Address = address
 	return cfg, nil
 }
