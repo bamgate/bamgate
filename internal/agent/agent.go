@@ -82,6 +82,7 @@ type peerState struct {
 	iceRestarts    int         // number of restarts attempted
 	disconnectTime time.Time   // when ICE entered disconnected state
 	restartTimer   *time.Timer // grace period timer (nil = not running)
+	pendingRestart bool        // true while we've sent an ICE restart offer and are awaiting an answer
 }
 
 // New creates a new Agent with the given configuration.
@@ -242,13 +243,52 @@ func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) err
 }
 
 // handleOffer processes an incoming SDP offer from a remote peer.
+//
+// If we already have a PeerConnection to this peer, the offer is applied to the
+// existing connection (valid for ICE restart / renegotiation). A new
+// PeerConnection is only created when there is no existing one.
+//
+// Glare resolution: when both sides detect ICE failure simultaneously, both send
+// ICE restart offers. To break the tie we use the same lexicographic rule as
+// initial connection — the peer with the smaller ID is the preferred offerer.
+// If we are the preferred offerer AND we already have a pending restart offer
+// out, we ignore the incoming offer (the remote side should answer ours instead).
+// If the connection is already established and stable, we also ignore offers from
+// the non-preferred side to prevent a working connection from being disrupted by
+// a stale or late-arriving offer.
 func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) error {
 	a.log.Info("received offer", "from", msg.From)
 
-	peer, err := a.createRTCPeer(ctx, msg.From)
-	if err != nil {
-		return fmt.Errorf("creating peer for offer: %w", err)
+	a.mu.Lock()
+	ps, exists := a.peers[msg.From]
+	hasConnection := exists && ps.rtcPeer != nil
+
+	if hasConnection {
+		weArePreferred := a.cfg.Device.Name < msg.From
+		iceState := ps.rtcPeer.ConnectionState()
+		isConnected := iceState == webrtc.ICEConnectionStateConnected ||
+			iceState == webrtc.ICEConnectionStateCompleted
+
+		// Case 1: We sent an ICE restart offer and we're the preferred offerer.
+		// The remote side should answer our offer, not send its own.
+		if ps.pendingRestart && weArePreferred {
+			a.mu.Unlock()
+			a.log.Info("ignoring offer: we have a pending restart and are the preferred offerer",
+				"from", msg.From, "ice_state", iceState.String())
+			return nil
+		}
+
+		// Case 2: Connection is working and we're the preferred offerer.
+		// A late-arriving offer from the other side would destroy our
+		// established connection.
+		if isConnected && weArePreferred {
+			a.mu.Unlock()
+			a.log.Info("ignoring offer: connection is established and we are the preferred offerer",
+				"from", msg.From, "ice_state", iceState.String())
+			return nil
+		}
 	}
+	a.mu.Unlock()
 
 	// Store the remote peer's WireGuard public key. The offer carries the
 	// sender's public key so the answering side can configure WireGuard
@@ -265,10 +305,33 @@ func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) err
 		}
 	}
 
+	// Reuse the existing PeerConnection if we have one (ICE restart /
+	// renegotiation). Only create a new one for brand-new peers.
+	var peer *rtcpkg.Peer
+	if hasConnection {
+		peer = ps.rtcPeer
+		a.log.Debug("reusing existing PeerConnection for offer",
+			"from", msg.From, "ice_state", peer.ConnectionState().String())
+	} else {
+		var err error
+		peer, err = a.createRTCPeer(ctx, msg.From)
+		if err != nil {
+			return fmt.Errorf("creating peer for offer: %w", err)
+		}
+	}
+
 	answerSDP, err := peer.HandleOffer(msg.SDP)
 	if err != nil {
 		return fmt.Errorf("handling offer: %w", err)
 	}
+
+	// We accepted their offer, so clear our pending restart flag — their
+	// offer supersedes ours.
+	a.mu.Lock()
+	if ps, ok := a.peers[msg.From]; ok {
+		ps.pendingRestart = false
+	}
+	a.mu.Unlock()
 
 	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)
 	return a.sigClient.Send(ctx, &protocol.AnswerMessage{
@@ -285,9 +348,12 @@ func (a *Agent) handleAnswer(msg *protocol.AnswerMessage) error {
 
 	a.mu.Lock()
 	ps, ok := a.peers[msg.From]
-	if ok && ps.publicKey.IsZero() && msg.PublicKey != "" {
-		if wgPubKey, err := config.ParseKey(msg.PublicKey); err == nil {
-			ps.publicKey = wgPubKey
+	if ok {
+		ps.pendingRestart = false
+		if ps.publicKey.IsZero() && msg.PublicKey != "" {
+			if wgPubKey, err := config.ParseKey(msg.PublicKey); err == nil {
+				ps.publicKey = wgPubKey
+			}
 		}
 	}
 	a.mu.Unlock()
@@ -645,6 +711,7 @@ func (a *Agent) handleICEStateChange(ctx context.Context, peerID string, state w
 		// Connection (re-)established. Reset restart counter and cancel any
 		// pending grace timer.
 		ps.iceRestarts = 0
+		ps.pendingRestart = false
 		if ps.restartTimer != nil {
 			ps.restartTimer.Stop()
 			ps.restartTimer = nil
@@ -720,6 +787,13 @@ func (a *Agent) attemptICERestart(ctx context.Context, peerID string) {
 		a.removePeer(peerID)
 		return
 	}
+
+	// Mark that we have a pending restart offer — used for glare resolution.
+	a.mu.Lock()
+	if ps, ok := a.peers[peerID]; ok {
+		ps.pendingRestart = true
+	}
+	a.mu.Unlock()
 
 	// Send the restart offer through signaling.
 	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)

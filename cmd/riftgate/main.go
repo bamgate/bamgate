@@ -4,11 +4,16 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
 )
+
+// version is set at build time via -ldflags "-X main.version=...".
+// GoReleaser sets this automatically from the git tag.
+var version = "dev"
 
 // Global flags shared across subcommands.
 var (
@@ -46,10 +51,20 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(genkeyCmd)
 	rootCmd.AddCommand(installCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	// Deprecated: init is superseded by setup.
 	initCmd.Deprecated = "use 'riftgate setup' instead"
 	rootCmd.AddCommand(initCmd)
+}
+
+// versionCmd prints the build version.
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print the riftgate version",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println(version)
+	},
 }
 
 func main() {
