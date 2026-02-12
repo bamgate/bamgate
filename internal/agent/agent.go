@@ -458,14 +458,19 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 		} else {
 			allowedIPs = []string{ip.String() + "/32"}
 
-			// Append validated advertised routes from the peer.
-			for _, route := range ps.routes {
-				if !isValidRoute(route) {
-					a.log.Warn("ignoring invalid or dangerous route from peer",
-						"peer_id", peerID, "route", route)
-					continue
+			// Append validated advertised routes from the peer if accept_routes is enabled.
+			if a.cfg.Device.AcceptRoutes {
+				for _, route := range ps.routes {
+					if !isValidRoute(route) {
+						a.log.Warn("ignoring invalid or dangerous route from peer",
+							"peer_id", peerID, "route", route)
+						continue
+					}
+					allowedIPs = append(allowedIPs, route)
 				}
-				allowedIPs = append(allowedIPs, route)
+			} else if len(ps.routes) > 0 {
+				a.log.Info("ignoring advertised routes from peer (accept_routes not enabled)",
+					"peer_id", peerID, "routes", ps.routes)
 			}
 
 			a.log.Info("using peer-specific AllowedIPs",
@@ -491,14 +496,16 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 	// directs matching traffic into the TUN interface. Without these routes,
 	// WireGuard has the AllowedIPs but the kernel doesn't know to send
 	// packets to riftgate0.
-	for _, route := range ps.routes {
-		if !isValidRoute(route) {
-			continue
-		}
-		if err := tunnel.AddRoute(a.tunName, route); err != nil {
-			a.log.Warn("adding route for peer", "peer_id", peerID, "route", route, "error", err)
-		} else {
-			a.log.Info("added route", "peer_id", peerID, "route", route, "dev", a.tunName)
+	if a.cfg.Device.AcceptRoutes {
+		for _, route := range ps.routes {
+			if !isValidRoute(route) {
+				continue
+			}
+			if err := tunnel.AddRoute(a.tunName, route); err != nil {
+				a.log.Warn("adding route for peer", "peer_id", peerID, "route", route, "error", err)
+			} else {
+				a.log.Info("added route", "peer_id", peerID, "route", route, "dev", a.tunName)
+			}
 		}
 	}
 }

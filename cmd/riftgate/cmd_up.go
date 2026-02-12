@@ -15,7 +15,10 @@ import (
 	"github.com/kuuji/riftgate/internal/config"
 )
 
-var upDaemon bool
+var (
+	upDaemon       bool
+	upAcceptRoutes bool
+)
 
 var upCmd = &cobra.Command{
 	Use:   "up",
@@ -40,6 +43,7 @@ const systemdServicePath = "/etc/systemd/system/riftgate.service"
 
 func init() {
 	upCmd.Flags().BoolVarP(&upDaemon, "daemon", "d", false, "start as a systemd service (enable + start)")
+	upCmd.Flags().BoolVar(&upAcceptRoutes, "accept-routes", false, "accept subnet routes advertised by peers")
 }
 
 func runUp(cmd *cobra.Command, args []string) error {
@@ -50,6 +54,11 @@ func runUp(cmd *cobra.Command, args []string) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+
+	// CLI flag overrides config file.
+	if upAcceptRoutes {
+		cfg.Device.AcceptRoutes = true
 	}
 
 	if err := validateConfig(cfg); err != nil {

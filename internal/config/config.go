@@ -72,6 +72,13 @@ type DeviceConfig struct {
 	// WireGuard AllowedIPs on remote peers. For example, a home server might
 	// advertise ["192.168.1.0/24"] so remote peers can reach the home LAN.
 	Routes []string `toml:"routes,omitempty"`
+
+	// AcceptRoutes controls whether this device installs subnet routes
+	// advertised by remote peers. When false (the default), only the peer's
+	// /32 tunnel address is added to WireGuard AllowedIPs — advertised LAN
+	// subnets are ignored. Set to true only when you know the remote subnets
+	// do not conflict with your local network.
+	AcceptRoutes bool `toml:"accept_routes,omitempty"`
 }
 
 // STUNConfig lists the STUN servers used for ICE NAT traversal.
