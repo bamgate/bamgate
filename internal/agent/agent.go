@@ -37,6 +37,7 @@ type Agent struct {
 
 	bind      *bridge.Bind
 	wgDevice  *tunnel.Device
+	tunName   string // kernel interface name (e.g. "riftgate0")
 	sigClient *signaling.Client
 	ctrlSrv   *control.Server
 
@@ -103,6 +104,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		_ = tunDev.Close()
 		return fmt.Errorf("getting TUN device name: %w", err)
 	}
+	a.tunName = actualName
 	a.log.Info("TUN device created", "name", actualName)
 
 	// 3. Create WireGuard device with our custom Bind.
@@ -472,6 +474,21 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 	if err := a.wgDevice.AddPeer(peerCfg); err != nil {
 		a.log.Error("adding WireGuard peer", "peer_id", peerID, "error", err)
 	}
+
+	// Add kernel routes for the peer's advertised subnets so the kernel
+	// directs matching traffic into the TUN interface. Without these routes,
+	// WireGuard has the AllowedIPs but the kernel doesn't know to send
+	// packets to riftgate0.
+	for _, route := range ps.routes {
+		if !isValidRoute(route) {
+			continue
+		}
+		if err := tunnel.AddRoute(a.tunName, route); err != nil {
+			a.log.Warn("adding route for peer", "peer_id", peerID, "route", route, "error", err)
+		} else {
+			a.log.Info("added route", "peer_id", peerID, "route", route, "dev", a.tunName)
+		}
+	}
 }
 
 // removePeer tears down the WebRTC connection and WireGuard peer state.
@@ -489,6 +506,18 @@ func (a *Agent) removePeer(peerID string) {
 	}
 	delete(a.peers, peerID)
 	a.mu.Unlock()
+
+	// Remove kernel routes for the peer's advertised subnets.
+	for _, route := range ps.routes {
+		if !isValidRoute(route) {
+			continue
+		}
+		if err := tunnel.RemoveRoute(a.tunName, route); err != nil {
+			a.log.Warn("removing route for peer", "peer_id", peerID, "route", route, "error", err)
+		} else {
+			a.log.Info("removed route", "peer_id", peerID, "route", route, "dev", a.tunName)
+		}
+	}
 
 	// Remove the data channel from the bridge.
 	a.bind.RemoveDataChannel(peerID)
