@@ -12,21 +12,32 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
-// systemSocketPath is the path used when running under systemd (or as root).
-const systemSocketPath = "/run/riftgate/control.sock"
-
 // ResolveSocketPath returns the best socket path for the current environment.
-// It checks in order:
+//
+// On Linux, it checks in order:
 //  1. /run/riftgate/ — if writable (systemd RuntimeDirectory= or root)
 //  2. $XDG_RUNTIME_DIR/riftgate/ — user-writable runtime directory
 //  3. /tmp/riftgate/ — fallback
+//
+// On macOS, it checks in order:
+//  1. /var/run/riftgate/ — system runtime directory (requires root)
+//  2. /tmp/riftgate/ — fallback
 func ResolveSocketPath() string {
-	// Check if the systemd-managed directory exists and is writable.
+	if runtime.GOOS == "darwin" {
+		// macOS: /var/run is the standard location for runtime data.
+		if info, err := os.Stat("/var/run/riftgate"); err == nil && info.IsDir() {
+			return "/var/run/riftgate/control.sock"
+		}
+		return "/tmp/riftgate/control.sock"
+	}
+
+	// Linux: check if the systemd-managed directory exists and is writable.
 	if info, err := os.Stat("/run/riftgate"); err == nil && info.IsDir() {
-		return systemSocketPath
+		return "/run/riftgate/control.sock"
 	}
 
 	// Fall back to XDG_RUNTIME_DIR.

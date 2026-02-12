@@ -205,60 +205,35 @@ Systemd unit file for running `riftgate up` as a persistent home agent.
 
 ## What's Next
 
-1. **macOS support** — See detailed plan below.
+1. **macOS support — launchd integration** — `up -d`, `down`, and `install --systemd` equivalents for macOS using launchd plists. See remaining items below.
 2. **Phase 4: TURN relay** — For peers behind symmetric NAT where direct ICE fails. Options: Cloudflare Worker-based TURN relay or external TURN server.
 3. **Rate limiting** — Add request rate limiting to the Worker `/connect` endpoint to prevent auth token brute-force and request quota abuse.
 4. **Android client** — gomobile build of the core library for Android.
 5. **End-to-end testing with systemd** — Verify the full `install --systemd` → `up -d` → `status` → `down` workflow on a fresh machine.
+6. **macOS end-to-end testing** — Test `sudo riftgate setup` → `sudo riftgate up` → `riftgate status` on a real Mac.
 
-### macOS Support Plan
+### macOS Support Status
 
 **Goal:** Full macOS (darwin) support for the riftgate CLI.
 
-**Current state:** All dependencies (wireguard-go, pion/webrtc, etc.) support macOS. The Linux-specific code is concentrated in 3 areas.
+**Phase 1 (DONE):** Core compilation and foreground operation. `GOOS=darwin go build` succeeds. `sudo riftgate up` runs in foreground on macOS.
 
-#### 1. Network Interface Management — `internal/tunnel/netlink.go` (Hard, ~1-2 days)
+#### Completed
 
-`netlink.go` is 100% Linux (`AF_NETLINK` doesn't exist on macOS). Need a `netlink_darwin.go` implementing the same functions:
+- **Network interface management** (`internal/tunnel/netlink_darwin.go`): All 6 functions implemented using shell commands (`ifconfig`, `route`, `sysctl`). `netlink.go` gated with `//go:build linux`. Cross-platform `FindInterfaceForSubnet` extracted to `iface.go`.
+- **NAT masquerade** (`internal/tunnel/nat_darwin.go`): `NATManager` implemented using macOS PF (`pfctl`) with a `com.riftgate` anchor. `nat.go` gated with `//go:build linux`.
+- **TUN device naming**: `DefaultTUNName` is `"riftgate0"` on Linux (`tun_linux.go`), `"utun"` on macOS (`tun_darwin.go`). Agent uses `tunnel.DefaultTUNName` instead of hardcoded name.
+- **Control socket path**: `ResolveSocketPath()` uses `/var/run/riftgate/` on macOS, `/run/riftgate/` on Linux.
+- **CLI commands**: `setup`, `install`, `up` (foreground) work on macOS. `up -d`, `down`, and `install --systemd` give clear "not yet implemented" messages on macOS.
 
-| Function | macOS approach (phase 1: shell commands) |
-|----------|------------------------------------------|
-| `AddAddress(ifName, cidr)` | `ifconfig <utunN> inet <ip> <ip> netmask <mask>` |
-| `SetLinkUp(ifName)` | `ifconfig <utunN> up` |
-| `AddRoute(ifName, cidr)` | `route add -net <cidr> -interface <utunN>` |
-| `RemoveRoute(ifName, cidr)` | `route delete -net <cidr>` |
+#### Remaining — launchd integration
 
-Phase 2 (optional): Replace shell commands with native BSD ioctl (`SIOCSIFADDR`, `SIOCSIFFLAGS`) + BSD routing socket (`AF_ROUTE`, `RTM_ADD`/`RTM_DELETE`).
-
-Files to change:
-- Add `//go:build linux` to `netlink.go` and `netlink_test.go`
-- Create `netlink_darwin.go` with `//go:build darwin`
-- Create `netlink_darwin_test.go`
-
-#### 2. TUN Device Naming (Trivial, ~1 hour)
-
-macOS requires `utun*` names (e.g. `utun0`, `utun1`). Linux allows any name (e.g. `riftgate0`).
-
-Files to change:
-- `internal/tunnel/tun.go` or `internal/agent/agent.go` — use `"utun"` on darwin (kernel auto-assigns next available), `"riftgate0"` on linux
-
-#### 3. Privilege & Service Management (Medium, ~1-2 days)
-
-| Concept | Linux | macOS |
-|---------|-------|-------|
-| Run without root | `setcap CAP_NET_ADMIN` | Not possible — `sudo` required |
-| Background service | systemd | launchd (plist in `/Library/LaunchDaemons/`) |
-| Start/stop daemon | `systemctl start/stop` | `launchctl load/unload` |
-| Control socket | `/run/riftgate/` | `/var/run/riftgate/` |
-
-Files to change:
-- `cmd/riftgate/cmd_install.go` — skip setcap on macOS, write launchd plist instead of systemd unit
-- `cmd/riftgate/cmd_setup.go` — remove `runtime.GOOS != "linux"` guard, adapt install step
-- `cmd/riftgate/cmd_up.go` — use `launchctl` instead of `systemctl` for `-d` flag on macOS
-- `cmd/riftgate/cmd_down.go` — use `launchctl` instead of `systemctl` on macOS
-- `internal/control/server.go` — use `/var/run/riftgate/` on macOS
-
-#### Estimated total effort: ~1 week
+| Feature | Status |
+|---------|--------|
+| `riftgate install` on macOS — write launchd plist to `/Library/LaunchDaemons/` | Not started |
+| `riftgate up -d` on macOS — `launchctl bootstrap system <plist>` | Not started |
+| `riftgate down` on macOS — `launchctl bootout system/com.riftgate` | Not started |
+| Optional: BSD ioctl/routing sockets (replace shell commands) | Not started |
 
 ## Testing
 
@@ -279,7 +254,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 | `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** — Added CloudflareConfig section |
 | `internal/signaling` | client.go, hub.go, client_test.go | **Implemented + tested** |
 | `pkg/protocol` | protocol.go, protocol_test.go | **Implemented + tested** |
-| `internal/tunnel` | config.go, device.go, tun.go, netlink.go, nat.go, config_test.go, netlink_test.go | **Implemented + tested** — IP forwarding (netlink), NAT (nftables) |
+| `internal/tunnel` | config.go, device.go, tun.go, tun_linux.go, tun_darwin.go, iface.go, netlink.go (linux), netlink_darwin.go, nat.go (linux), nat_darwin.go, config_test.go, netlink_test.go | **Implemented + tested** — Cross-platform: Linux (netlink + nftables), macOS (ifconfig/route/sysctl + pfctl) |
 | `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** |
 | `internal/deploy` | cloudflare.go, assets.go, assets/ | **Implemented** — Cloudflare API client, embedded worker assets |
 | `worker/` | hub.go, main.go, src/worker.mjs | **Implemented + deployed** — TinyGo 414KB Wasm, Cloudflare Workers free tier. Invite + network-info endpoints. |
@@ -303,6 +278,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 ## Changelog
 
+- **2026-02-12 (session 5)**: macOS (darwin) support — phase 1. The project now compiles and runs on macOS (`GOOS=darwin`). Split all Linux-specific code into platform files with `//go:build` tags: `netlink.go` → Linux netlink syscalls, `netlink_darwin.go` → `ifconfig`/`route`/`sysctl` shell commands for interface management. `nat.go` → Linux nftables, `nat_darwin.go` → macOS PF (`pfctl`) with `com.riftgate` anchor for NAT masquerade. Extracted cross-platform `FindInterfaceForSubnet()` to `iface.go`. Added `tun_linux.go` (`DefaultTUNName = "riftgate0"`) and `tun_darwin.go` (`DefaultTUNName = "utun"` — kernel auto-assigns). Agent uses `tunnel.DefaultTUNName` instead of hardcoded name. Control socket path uses `/var/run/riftgate/` on macOS. CLI commands (`setup`, `install`, `up` foreground) work on macOS with clear messages for not-yet-implemented features (`up -d`, `down` — launchd integration pending). All existing Linux tests pass. Cross-compiles cleanly for `darwin/amd64` and `darwin/arm64`.
 - **2026-02-12 (session 4)**: Automatic IP forwarding and NAT for advertised subnet routes. Added `--accept-routes` opt-in flag — remote subnet routes are no longer installed by default to prevent conflicts when both sides share the same LAN subnet. When a device advertises routes (e.g., `192.168.1.0/24`), remote peers could reach the device itself but not other hosts on the advertised subnet — packets were dropped because Linux doesn't forward between interfaces by default and LAN devices couldn't reply without NAT. Riftgate now automatically enables per-interface IPv4 forwarding via netlink `RTM_SETLINK` with `IFLA_AF_SPEC` > `IFLA_INET_CONF` (avoids `/proc/sys` writes that require `CAP_DAC_OVERRIDE` or root) and sets up nftables MASQUERADE rules using `github.com/google/nftables` (pure Go netlink library, no iptables/nft binaries needed) in a dedicated `riftgate` nftables table. `FindInterfaceForSubnet()` auto-detects the outgoing LAN interface. Previous forwarding state is saved and restored on shutdown. No new capabilities needed — existing `CAP_NET_ADMIN` covers both netlink forwarding and nftables.
 - **2026-02-12 (session 3)**: Automated setup & deployment. New `riftgate setup` command — single interactive wizard that deploys the Cloudflare Worker signaling server, configures the device, and installs the binary with capabilities. Two setup paths: (1) Cloudflare API token — deploys worker on first run, detects existing worker and retrieves config on subsequent runs; (2) invite code — no CF account needed on second device. New `riftgate invite` command generates short-lived invite codes (10 min, single-use) for adding devices to the network. Worker updated with `/invite` (create/redeem) and `/network-info` endpoints using Durable Object SQLite for invite storage and automatic tunnel address assignment. Auth token stored as plain text binding (readable via CF API). Worker assets embedded in Go binary via `//go:embed` (~438KB). New `internal/deploy/` package with Cloudflare REST API v4 client (token verify, accounts, subdomain, worker upload with multipart modules + DO bindings + migrations, worker settings). Config extended with `[cloudflare]` section (api_token, account_id, worker_name). `riftgate init` deprecated in favor of `setup`.
 - **2026-02-12 (session 2)**: UX & operational improvements. Fixed `riftgate init` URL scheme bug (auto-prepend `wss://` for bare hostnames). Added `riftgate up -d` daemon mode (systemctl enable + start) and `riftgate down` (systemctl disable + stop). Fixed systemd service to run as the installing user instead of root — uses `$SUDO_USER` to resolve the real user and sets `User=`/`Group=` in the service file; capabilities granted via `AmbientCapabilities`. Neither `up -d` nor `down` require the user to prefix with sudo (they invoke `sudo systemctl` internally). Non-root TUN configuration via raw netlink syscalls (replaces `exec ip`). Smart control socket path resolution. `riftgate install` command with `--systemd` flag. Redeployed Cloudflare Worker with subnet routing support.

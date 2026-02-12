@@ -41,8 +41,8 @@ func init() {
 }
 
 func runInstall(cmd *cobra.Command, args []string) error {
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("install is only supported on Linux")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return fmt.Errorf("install is only supported on Linux and macOS")
 	}
 
 	if os.Getuid() != 0 {
@@ -84,26 +84,74 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Set capabilities.
-	fmt.Fprintf(os.Stderr, "Setting capabilities on %s\n", destPath)
-	setcap := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", destPath)
-	setcap.Stdout = os.Stderr
-	setcap.Stderr = os.Stderr
-	if err := setcap.Run(); err != nil {
-		return fmt.Errorf("setcap failed (is libcap installed?): %w", err)
+	if runtime.GOOS == "linux" {
+		// Set Linux capabilities so riftgate can run without root.
+		fmt.Fprintf(os.Stderr, "Setting capabilities on %s\n", destPath)
+		setcap := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", destPath)
+		setcap.Stdout = os.Stderr
+		setcap.Stderr = os.Stderr
+		if err := setcap.Run(); err != nil {
+			return fmt.Errorf("setcap failed (is libcap installed?): %w", err)
+		}
+	} else {
+		// macOS has no capability system — TUN creation always requires root.
+		fmt.Fprintf(os.Stderr, "Note: macOS requires sudo to create TUN devices (no setcap equivalent).\n")
 	}
 
-	// Optionally install systemd service.
+	// Optionally install systemd service (Linux only).
 	if installSystemd {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("--systemd is only supported on Linux; launchd support is not yet implemented")
+		}
 		if err := installSystemdService(destPath); err != nil {
 			return err
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "\nInstallation complete.\n")
-	fmt.Fprintf(os.Stderr, "You can now run 'riftgate up' without sudo.\n")
-	if installSystemd {
-		fmt.Fprintf(os.Stderr, "To enable the service: sudo systemctl enable --now riftgate\n")
+	if runtime.GOOS == "linux" {
+		fmt.Fprintf(os.Stderr, "You can now run 'riftgate up' without sudo.\n")
+		if installSystemd {
+			fmt.Fprintf(os.Stderr, "To enable the service: sudo systemctl enable --now riftgate\n")
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Run 'sudo riftgate up' to connect.\n")
+	}
+
+	return nil
+}
+
+// installBinary copies the running binary to the system path without setting
+// Linux capabilities. Used on macOS where capabilities don't exist.
+func installBinary(prefix string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("finding current binary: %w", err)
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return fmt.Errorf("resolving binary path: %w", err)
+	}
+
+	destDir := filepath.Join(prefix, "bin")
+	destPath := filepath.Join(destDir, "riftgate")
+
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("creating %s: %w", destDir, err)
+	}
+
+	if self == destPath {
+		fmt.Fprintf(os.Stderr, "  Binary already at %s\n", destPath)
+	} else {
+		tmpPath := destPath + ".tmp"
+		if err := copyFile(self, tmpPath); err != nil {
+			return fmt.Errorf("copying binary: %w", err)
+		}
+		if err := os.Rename(tmpPath, destPath); err != nil {
+			os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup
+			return fmt.Errorf("installing binary: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "  Binary installed to %s\n", destPath)
 	}
 
 	return nil

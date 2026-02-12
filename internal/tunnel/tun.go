@@ -7,16 +7,17 @@ import (
 )
 
 const (
-	// DefaultTUNName is the default name for the riftgate TUN interface.
-	DefaultTUNName = "riftgate0"
-
 	// DefaultMTU is the default MTU for the WireGuard TUN interface.
 	// WireGuard standard is 1420, leaving room for encapsulation overhead.
 	DefaultMTU = 1420
 )
 
+// DefaultTUNName is defined per-platform:
+//   - Linux: "riftgate0" (in tun_linux.go)
+//   - macOS: "utun" (in tun_darwin.go) — kernel auto-assigns next available utun
+
 // CreateTUN creates a kernel TUN device with the given name and MTU.
-// Requires CAP_NET_ADMIN (typically root).
+// On Linux, requires CAP_NET_ADMIN. On macOS, requires root privileges.
 func CreateTUN(name string, mtu int) (tun.Device, error) {
 	if name == "" {
 		name = DefaultTUNName

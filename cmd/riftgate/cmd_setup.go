@@ -43,8 +43,8 @@ This command should be run with sudo:
 }
 
 func runSetup(cmd *cobra.Command, args []string) error {
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("setup is only supported on Linux")
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return fmt.Errorf("setup is only supported on Linux and macOS")
 	}
 
 	if os.Getuid() != 0 {
@@ -116,24 +116,36 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	chownForUser(cfgPath, realUser)
 	fmt.Fprintf(os.Stderr, "  Config written to %s\n", cfgPath)
 
-	// --- Install binary + capabilities ---
+	// --- Install binary ---
 	fmt.Fprintf(os.Stderr, "\nInstallation\n")
 	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 12))
 
-	if err := installBinaryWithCaps("/usr/local"); err != nil {
-		return fmt.Errorf("installing binary: %w", err)
-	}
-
-	// Optionally install systemd service.
-	if promptYesNo(scanner, "Install systemd service?", true) {
-		destPath := "/usr/local/bin/riftgate"
-		if err := installSystemdService(destPath); err != nil {
-			return fmt.Errorf("installing systemd service: %w", err)
+	if runtime.GOOS == "linux" {
+		if err := installBinaryWithCaps("/usr/local"); err != nil {
+			return fmt.Errorf("installing binary: %w", err)
 		}
+
+		// Optionally install systemd service.
+		if promptYesNo(scanner, "Install systemd service?", true) {
+			destPath := "/usr/local/bin/riftgate"
+			if err := installSystemdService(destPath); err != nil {
+				return fmt.Errorf("installing systemd service: %w", err)
+			}
+		}
+	} else {
+		if err := installBinary("/usr/local"); err != nil {
+			return fmt.Errorf("installing binary: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "  Note: macOS requires sudo to run riftgate (no setcap equivalent).\n")
 	}
 
 	// --- Done ---
-	fmt.Fprintf(os.Stderr, "\nSetup complete! Run 'riftgate up' to connect.\n")
+	fmt.Fprintf(os.Stderr, "\nSetup complete!")
+	if runtime.GOOS == "darwin" {
+		fmt.Fprintf(os.Stderr, " Run 'sudo riftgate up' to connect.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, " Run 'riftgate up' to connect.\n")
+	}
 	fmt.Fprintf(os.Stderr, "  Public key: %s\n", pubKey.String())
 	fmt.Fprintf(os.Stderr, "\nTo add another device to this network, run on a connected device:\n")
 	fmt.Fprintf(os.Stderr, "  riftgate invite\n")

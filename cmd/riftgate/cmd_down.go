@@ -20,7 +20,7 @@ This is the counterpart to 'riftgate up -d'.`,
 
 func runDown(cmd *cobra.Command, args []string) error {
 	if runtime.GOOS != "linux" {
-		return fmt.Errorf("down is only supported on Linux")
+		return fmt.Errorf("'riftgate down' requires systemd and is only supported on Linux; launchd support is not yet implemented\n\nIf riftgate is running in the foreground, press Ctrl+C to stop it")
 	}
 	if _, err := os.Stat(systemdServicePath); os.IsNotExist(err) {
 		return fmt.Errorf("systemd service not installed; nothing to stop")

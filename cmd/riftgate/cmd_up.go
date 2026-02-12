@@ -88,7 +88,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 // runUpDaemon starts riftgate as a systemd service (enable + start).
 func runUpDaemon() error {
 	if runtime.GOOS != "linux" {
-		return fmt.Errorf("daemon mode is only supported on Linux")
+		return fmt.Errorf("daemon mode (-d) requires systemd and is only supported on Linux; launchd support is not yet implemented\n\nRun 'sudo riftgate up' (without -d) to start in the foreground")
 	}
 	if _, err := os.Stat(systemdServicePath); os.IsNotExist(err) {
 		return fmt.Errorf("systemd service not installed; run 'sudo riftgate install --systemd' first")

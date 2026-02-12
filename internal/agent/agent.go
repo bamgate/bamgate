@@ -103,8 +103,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.bind = bridge.NewBind(a.log)
 
 	// 2. Create kernel TUN device.
-	tunName := "riftgate0"
-	tunDev, err := tunnel.CreateTUN(tunName, tunnel.DefaultMTU)
+	tunDev, err := tunnel.CreateTUN(tunnel.DefaultTUNName, tunnel.DefaultMTU)
 	if err != nil {
 		return fmt.Errorf("creating TUN device: %w", err)
 	}
