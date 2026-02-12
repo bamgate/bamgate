@@ -39,12 +39,17 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&globalConfigPath, "config", "", "path to config file (default: ~/.config/riftgate/config.toml)")
 	rootCmd.PersistentFlags().BoolVarP(&globalVerbose, "verbose", "v", false, "enable debug logging")
 
+	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(upCmd)
 	rootCmd.AddCommand(downCmd)
-	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(inviteCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(genkeyCmd)
 	rootCmd.AddCommand(installCmd)
+
+	// Deprecated: init is superseded by setup.
+	initCmd.Deprecated = "use 'riftgate setup' instead"
+	rootCmd.AddCommand(initCmd)
 }
 
 func main() {

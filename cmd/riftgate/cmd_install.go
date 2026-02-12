@@ -72,8 +72,15 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Binary already at %s, skipping copy.\n", destPath)
 	} else {
 		fmt.Fprintf(os.Stderr, "Copying %s -> %s\n", self, destPath)
-		if err := copyFile(self, destPath); err != nil {
+		// Write to a temp file first, then atomically rename. This avoids
+		// "text file busy" errors when the destination binary is currently running.
+		tmpPath := destPath + ".tmp"
+		if err := copyFile(self, tmpPath); err != nil {
 			return fmt.Errorf("copying binary: %w", err)
+		}
+		if err := os.Rename(tmpPath, destPath); err != nil {
+			os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup
+			return fmt.Errorf("installing binary: %w", err)
 		}
 	}
 

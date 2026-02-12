@@ -19,10 +19,25 @@ var DefaultSTUNServers = []string{
 // Config is the top-level configuration for riftgate.
 // It is persisted as a TOML file at DefaultConfigPath().
 type Config struct {
-	Network NetworkConfig `toml:"network"`
-	Device  DeviceConfig  `toml:"device"`
-	STUN    STUNConfig    `toml:"stun"`
-	WebRTC  WebRTCConfig  `toml:"webrtc"`
+	Cloudflare CloudflareConfig `toml:"cloudflare"`
+	Network    NetworkConfig    `toml:"network"`
+	Device     DeviceConfig     `toml:"device"`
+	STUN       STUNConfig       `toml:"stun"`
+	WebRTC     WebRTCConfig     `toml:"webrtc"`
+}
+
+// CloudflareConfig stores Cloudflare account credentials used for deploying
+// and managing the signaling worker. These fields are populated by `riftgate setup`.
+type CloudflareConfig struct {
+	// APIToken is the Cloudflare API token with Workers Scripts:Edit and
+	// Account Settings:Read permissions.
+	APIToken string `toml:"api_token,omitempty"`
+
+	// AccountID is the Cloudflare account ID associated with the API token.
+	AccountID string `toml:"account_id,omitempty"`
+
+	// WorkerName is the name of the deployed Cloudflare Worker (default: "riftgate").
+	WorkerName string `toml:"worker_name,omitempty"`
 }
 
 // NetworkConfig identifies the riftgate network and its signaling server.
@@ -104,6 +119,13 @@ func DefaultConfigPath() (string, error) {
 		dir = filepath.Join(home, ".config")
 	}
 	return filepath.Join(dir, "riftgate", "config.toml"), nil
+}
+
+// ConfigPathForUser returns the config path for a specific user's home directory.
+// This is used when running as root (via sudo) to write config to the real user's
+// home directory instead of root's.
+func ConfigPathForUser(homeDir string) string {
+	return filepath.Join(homeDir, ".config", "riftgate", "config.toml")
 }
 
 // LoadConfig reads and decodes a TOML config file from the given path.
