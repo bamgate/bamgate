@@ -78,13 +78,26 @@ func runInvite(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("parsing invite response: %w", err)
 	}
 
+	// Extract worker name and subdomain from the server URL for display.
+	workerName, subdomain, _ := parseWorkersDevURL(cfg.Network.ServerURL)
+
 	fmt.Fprintf(os.Stderr, "\nInvite code created!\n\n")
-	fmt.Fprintf(os.Stderr, "  Code:       %s\n", result.Code)
-	fmt.Fprintf(os.Stderr, "  Server:     %s\n", baseURL)
-	fmt.Fprintf(os.Stderr, "  Expires in: %d minutes\n", result.ExpiresIn/60)
+	fmt.Fprintf(os.Stderr, "  Code:        %s\n", result.Code)
+	if workerName != "" && subdomain != "" {
+		fmt.Fprintf(os.Stderr, "  Worker name: %s\n", workerName)
+		fmt.Fprintf(os.Stderr, "  Subdomain:   %s\n", subdomain)
+	} else {
+		fmt.Fprintf(os.Stderr, "  Server:      %s\n", baseURL)
+	}
+	fmt.Fprintf(os.Stderr, "  Expires in:  %d minutes\n", result.ExpiresIn/60)
 	fmt.Fprintf(os.Stderr, "\nOn the new device, run:\n")
 	fmt.Fprintf(os.Stderr, "  sudo riftgate setup\n\n")
-	fmt.Fprintf(os.Stderr, "When prompted, enter the invite code and server URL above.\n")
+	fmt.Fprintf(os.Stderr, "When prompted, enter the invite code")
+	if workerName != "" && subdomain != "" {
+		fmt.Fprintf(os.Stderr, ", worker name, and subdomain above.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, " and server URL above.\n")
+	}
 
 	return nil
 }
@@ -109,4 +122,27 @@ func wsToHTTPBaseURL(wsURL string) (string, error) {
 	u.Path = strings.TrimSuffix(u.Path, "/")
 
 	return u.String(), nil
+}
+
+// parseWorkersDevURL extracts the worker name and subdomain from a workers.dev URL.
+// e.g. "wss://riftgate.ag94441.workers.dev/connect" → ("riftgate", "ag94441", nil)
+func parseWorkersDevURL(rawURL string) (workerName, subdomain string, err error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", "", err
+	}
+
+	host := u.Hostname()
+	if !strings.HasSuffix(host, ".workers.dev") {
+		return "", "", fmt.Errorf("not a workers.dev URL: %s", host)
+	}
+
+	// Strip ".workers.dev" and split on ".".
+	prefix := strings.TrimSuffix(host, ".workers.dev")
+	parts := strings.SplitN(prefix, ".", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("unexpected workers.dev hostname format: %s", host)
+	}
+
+	return parts[0], parts[1], nil
 }

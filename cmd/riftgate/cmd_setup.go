@@ -146,21 +146,18 @@ func setupWithInvite(ctx context.Context, scanner *bufio.Scanner) (*config.Confi
 	fmt.Fprintf(os.Stderr, "\nInvite Setup\n")
 	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 12))
 
-	serverURL := promptString(scanner, "Signaling server URL (from the invite)", "")
-	if serverURL == "" {
-		return nil, fmt.Errorf("server URL is required to redeem an invite")
+	workerName := promptString(scanner, "Worker name", "riftgate")
+	subdomain := promptString(scanner, "Cloudflare subdomain", "")
+	if subdomain == "" {
+		return nil, fmt.Errorf("subdomain is required")
 	}
-	// Normalize — accept https:// or bare domain.
-	serverURL = strings.TrimSpace(serverURL)
-	if !strings.HasPrefix(serverURL, "http://") && !strings.HasPrefix(serverURL, "https://") {
-		serverURL = "https://" + serverURL
-	}
-	serverURL = strings.TrimSuffix(serverURL, "/")
 
 	code := promptString(scanner, "Invite code", "")
 	if code == "" {
 		return nil, fmt.Errorf("invite code is required")
 	}
+
+	serverURL := fmt.Sprintf("https://%s.%s.workers.dev", workerName, subdomain)
 
 	// Redeem the invite.
 	redeemURL := fmt.Sprintf("%s/invite/%s", serverURL, code)
