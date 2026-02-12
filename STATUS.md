@@ -56,7 +56,7 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 - **Subnet routing**: Peers can advertise additional subnets via `routes` field in `[device]` config. Routes propagate through signaling (`Routes` field in `JoinMessage`/`PeerInfo`), through the Worker DO, and are added as WireGuard AllowedIPs on remote peers. Dangerous routes (`0.0.0.0/0`, `::/0`) and invalid CIDRs are rejected with warnings.
 - **ICE restart / resilience**: Replaced immediate peer teardown on ICE failure with a restart-then-remove strategy. `ICEConnectionStateDisconnected` triggers a 5-second grace period (ICE may self-recover). `ICEConnectionStateFailed` triggers an immediate ICE restart via `CreateOffer` with ICE restart flag. Up to 3 restart attempts before tearing down. `ICEConnectionStateConnected` resets the restart counter. Grace timers are cleaned up on peer removal.
 - **`riftgate status` command + control server** (`internal/control/`): Agent listens on Unix socket (`/run/riftgate/control.sock`) serving a JSON status API. Status includes device info, uptime, and per-peer state (address, ICE connection state, ICE candidate type, advertised routes, connected-since timestamp). `riftgate status` connects to the socket and displays a formatted table. Control server starts non-fatally (agent runs without it if socket creation fails).
-- **Systemd service** (`dist/riftgate.service`): Unit file with `Type=simple`, `Restart=on-failure`, capability-based hardening (`CAP_NET_ADMIN`, `CAP_NET_RAW`), filesystem restrictions (`ProtectSystem=strict`, `ProtectHome=read-only`), and runtime directory for the control socket.
+- **Systemd service** (`contrib/riftgate.service`): Unit file with `Type=simple`, `Restart=on-failure`, capability-based hardening (`CAP_NET_ADMIN`, `CAP_NET_RAW`), filesystem restrictions (`ProtectSystem=strict`, `ProtectHome=read-only`), and runtime directory for the control socket.
 - **WebRTC test race fix**: Fixed pre-existing data race in `internal/webrtc/peer_test.go` where pion ICE gathering goroutines could send on closed candidate channels. Added `safeCandidateSender` helper using a `done` channel to guard sends during test teardown.
 - **Non-root TUN configuration** (`internal/tunnel/netlink.go`): Replaced `exec.Command("ip", ...)` calls with direct netlink syscalls (`NETLINK_ROUTE` socket) for adding IP addresses and bringing interfaces up. No dependency on the `ip` binary. Uses `golang.org/x/sys/unix` for raw syscall access. 4 tests for message construction.
 - **Smart control socket path** (`internal/control/server.go`): `ResolveSocketPath()` checks `/run/riftgate/` (systemd), then `$XDG_RUNTIME_DIR/riftgate/`, then `/tmp/riftgate/` as fallback.
@@ -176,7 +176,7 @@ Currently, ICE failure tears down the peer entirely. Instead, try an ICE restart
 Systemd unit file for running `riftgate up` as a persistent home agent.
 
 **Changes:**
-- `dist/riftgate.service` — `Type=simple`, `Restart=on-failure`, capability-based hardening (`CAP_NET_ADMIN`, `CAP_NET_RAW`), `ReadWritePaths=/run/riftgate`
+- `contrib/riftgate.service` — `Type=simple`, `Restart=on-failure`, capability-based hardening (`CAP_NET_ADMIN`, `CAP_NET_RAW`), `ReadWritePaths=/run/riftgate`
 
 ### Execution Order
 
@@ -201,14 +201,64 @@ Systemd unit file for running `riftgate up` as a persistent home agent.
 | WebRTC | — | `internal/webrtc/peer.go` |
 | Agent | — | `internal/agent/agent.go` |
 | Worker | — | `worker/hub.go` |
-| Systemd | `dist/riftgate.service` | — |
+| Systemd | `contrib/riftgate.service` | — |
 
 ## What's Next
 
-1. **Phase 4: TURN relay** — For peers behind symmetric NAT where direct ICE fails. Options: Cloudflare Worker-based TURN relay or external TURN server.
-2. **Rate limiting** — Add request rate limiting to the Worker `/connect` endpoint to prevent auth token brute-force and request quota abuse.
-3. **Android client** — gomobile build of the core library for Android.
-4. **End-to-end testing with systemd** — Verify the full `install --systemd` → `up -d` → `status` → `down` workflow on a fresh machine.
+1. **macOS support** — See detailed plan below.
+2. **Phase 4: TURN relay** — For peers behind symmetric NAT where direct ICE fails. Options: Cloudflare Worker-based TURN relay or external TURN server.
+3. **Rate limiting** — Add request rate limiting to the Worker `/connect` endpoint to prevent auth token brute-force and request quota abuse.
+4. **Android client** — gomobile build of the core library for Android.
+5. **End-to-end testing with systemd** — Verify the full `install --systemd` → `up -d` → `status` → `down` workflow on a fresh machine.
+
+### macOS Support Plan
+
+**Goal:** Full macOS (darwin) support for the riftgate CLI.
+
+**Current state:** All dependencies (wireguard-go, pion/webrtc, etc.) support macOS. The Linux-specific code is concentrated in 3 areas.
+
+#### 1. Network Interface Management — `internal/tunnel/netlink.go` (Hard, ~1-2 days)
+
+`netlink.go` is 100% Linux (`AF_NETLINK` doesn't exist on macOS). Need a `netlink_darwin.go` implementing the same functions:
+
+| Function | macOS approach (phase 1: shell commands) |
+|----------|------------------------------------------|
+| `AddAddress(ifName, cidr)` | `ifconfig <utunN> inet <ip> <ip> netmask <mask>` |
+| `SetLinkUp(ifName)` | `ifconfig <utunN> up` |
+| `AddRoute(ifName, cidr)` | `route add -net <cidr> -interface <utunN>` |
+| `RemoveRoute(ifName, cidr)` | `route delete -net <cidr>` |
+
+Phase 2 (optional): Replace shell commands with native BSD ioctl (`SIOCSIFADDR`, `SIOCSIFFLAGS`) + BSD routing socket (`AF_ROUTE`, `RTM_ADD`/`RTM_DELETE`).
+
+Files to change:
+- Add `//go:build linux` to `netlink.go` and `netlink_test.go`
+- Create `netlink_darwin.go` with `//go:build darwin`
+- Create `netlink_darwin_test.go`
+
+#### 2. TUN Device Naming (Trivial, ~1 hour)
+
+macOS requires `utun*` names (e.g. `utun0`, `utun1`). Linux allows any name (e.g. `riftgate0`).
+
+Files to change:
+- `internal/tunnel/tun.go` or `internal/agent/agent.go` — use `"utun"` on darwin (kernel auto-assigns next available), `"riftgate0"` on linux
+
+#### 3. Privilege & Service Management (Medium, ~1-2 days)
+
+| Concept | Linux | macOS |
+|---------|-------|-------|
+| Run without root | `setcap CAP_NET_ADMIN` | Not possible — `sudo` required |
+| Background service | systemd | launchd (plist in `/Library/LaunchDaemons/`) |
+| Start/stop daemon | `systemctl start/stop` | `launchctl load/unload` |
+| Control socket | `/run/riftgate/` | `/var/run/riftgate/` |
+
+Files to change:
+- `cmd/riftgate/cmd_install.go` — skip setcap on macOS, write launchd plist instead of systemd unit
+- `cmd/riftgate/cmd_setup.go` — remove `runtime.GOOS != "linux"` guard, adapt install step
+- `cmd/riftgate/cmd_up.go` — use `launchctl` instead of `systemctl` for `-d` flag on macOS
+- `cmd/riftgate/cmd_down.go` — use `launchctl` instead of `systemctl` on macOS
+- `internal/control/server.go` — use `/var/run/riftgate/` on macOS
+
+#### Estimated total effort: ~1 week
 
 ## Testing
 
