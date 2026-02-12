@@ -24,6 +24,7 @@ func AddAddress(ifName string, cidr string) error {
 	}
 
 	mask := net.IP(ipNet.Mask).String()
+	prefixLen, _ := ipNet.Mask.Size()
 
 	// macOS ifconfig for point-to-point TUN:
 	//   ifconfig <utunN> inet <local_ip> <local_ip> netmask <mask>
@@ -33,6 +34,16 @@ func AddAddress(ifName string, cidr string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ifconfig add address %s on %s: %w (output: %s)",
 			cidr, ifName, err, strings.TrimSpace(string(out)))
+	}
+
+	// macOS point-to-point TUN interfaces don't automatically create a
+	// connected route for the subnet (unlike Linux). Add it explicitly
+	// so the kernel knows to route the entire subnet through this interface.
+	subnetRoute := fmt.Sprintf("%s/%d", ipNet.IP.String(), prefixLen)
+	routeCmd := exec.Command("route", "-n", "add", "-net", subnetRoute, "-interface", ifName)
+	if out, err := routeCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("adding subnet route %s on %s: %w (output: %s)",
+			subnetRoute, ifName, err, strings.TrimSpace(string(out)))
 	}
 
 	return nil
