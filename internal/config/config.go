@@ -51,6 +51,12 @@ type DeviceConfig struct {
 
 	// Address is the WireGuard interface address in CIDR notation (e.g. "10.0.0.1/24").
 	Address string `toml:"address"`
+
+	// Routes is a list of additional subnets (CIDR notation) reachable through
+	// this device. These are advertised to peers via signaling and added as
+	// WireGuard AllowedIPs on remote peers. For example, a home server might
+	// advertise ["192.168.1.0/24"] so remote peers can reach the home LAN.
+	Routes []string `toml:"routes,omitempty"`
 }
 
 // STUNConfig lists the STUN servers used for ICE NAT traversal.

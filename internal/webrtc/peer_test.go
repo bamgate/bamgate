@@ -15,6 +15,19 @@ func localICEConfig() ICEConfig {
 	return ICEConfig{}
 }
 
+// safeCandidateSender creates an ICE candidate callback that sends to the
+// given channel without panicking if the channel is already closed. This
+// prevents a race between pion's ICE gathering goroutines (which may fire
+// late candidates) and the test tearing down.
+func safeCandidateSender(ch chan<- string, done <-chan struct{}) func(string) {
+	return func(candidate string) {
+		select {
+		case ch <- candidate:
+		case <-done:
+		}
+	}
+}
+
 // TestPeer_OfferAnswer verifies that two peers can complete the SDP
 // offer/answer exchange and open a data channel using local ICE candidates
 // (no STUN/TURN required).
@@ -24,6 +37,7 @@ func TestPeer_OfferAnswer(t *testing.T) {
 	// Channels to relay ICE candidates between the two peers.
 	candidatesForB := make(chan string, 32)
 	candidatesForA := make(chan string, 32)
+	done := make(chan struct{}) // closed when test is tearing down
 
 	// Channels to signal when data channels are open.
 	dcOpenA := make(chan *pionwebrtc.DataChannel, 1)
@@ -31,12 +45,10 @@ func TestPeer_OfferAnswer(t *testing.T) {
 
 	// Create the offerer (peer A).
 	peerA, err := NewPeer(PeerConfig{
-		ICE:      localICEConfig(),
-		LocalID:  "peer-a",
-		RemoteID: "peer-b",
-		OnICECandidate: func(candidate string) {
-			candidatesForB <- candidate
-		},
+		ICE:            localICEConfig(),
+		LocalID:        "peer-a",
+		RemoteID:       "peer-b",
+		OnICECandidate: safeCandidateSender(candidatesForB, done),
 		OnDataChannel: func(dc *pionwebrtc.DataChannel) {
 			dcOpenA <- dc
 		},
@@ -48,12 +60,10 @@ func TestPeer_OfferAnswer(t *testing.T) {
 
 	// Create the answerer (peer B).
 	peerB, err := NewPeer(PeerConfig{
-		ICE:      localICEConfig(),
-		LocalID:  "peer-b",
-		RemoteID: "peer-a",
-		OnICECandidate: func(candidate string) {
-			candidatesForA <- candidate
-		},
+		ICE:            localICEConfig(),
+		LocalID:        "peer-b",
+		RemoteID:       "peer-a",
+		OnICECandidate: safeCandidateSender(candidatesForA, done),
 		OnDataChannel: func(dc *pionwebrtc.DataChannel) {
 			dcOpenB <- dc
 		},
@@ -134,7 +144,8 @@ func TestPeer_OfferAnswer(t *testing.T) {
 		t.Errorf("peer B data channel label = %q, want %q", dcB.Label(), DataChannelLabel)
 	}
 
-	// Stop relaying ICE candidates.
+	// Signal done to stop any late ICE candidate sends, then close channels.
+	close(done)
 	close(candidatesForB)
 	close(candidatesForA)
 	wg.Wait()
@@ -147,16 +158,15 @@ func TestPeer_BidirectionalData(t *testing.T) {
 
 	candidatesForB := make(chan string, 32)
 	candidatesForA := make(chan string, 32)
+	done := make(chan struct{})
 	dcOpenA := make(chan *pionwebrtc.DataChannel, 1)
 	dcOpenB := make(chan *pionwebrtc.DataChannel, 1)
 
 	peerA, err := NewPeer(PeerConfig{
-		ICE:      localICEConfig(),
-		LocalID:  "peer-a",
-		RemoteID: "peer-b",
-		OnICECandidate: func(candidate string) {
-			candidatesForB <- candidate
-		},
+		ICE:            localICEConfig(),
+		LocalID:        "peer-a",
+		RemoteID:       "peer-b",
+		OnICECandidate: safeCandidateSender(candidatesForB, done),
 		OnDataChannel: func(dc *pionwebrtc.DataChannel) {
 			dcOpenA <- dc
 		},
@@ -167,12 +177,10 @@ func TestPeer_BidirectionalData(t *testing.T) {
 	defer peerA.Close()
 
 	peerB, err := NewPeer(PeerConfig{
-		ICE:      localICEConfig(),
-		LocalID:  "peer-b",
-		RemoteID: "peer-a",
-		OnICECandidate: func(candidate string) {
-			candidatesForA <- candidate
-		},
+		ICE:            localICEConfig(),
+		LocalID:        "peer-b",
+		RemoteID:       "peer-a",
+		OnICECandidate: safeCandidateSender(candidatesForA, done),
 		OnDataChannel: func(dc *pionwebrtc.DataChannel) {
 			dcOpenB <- dc
 		},
@@ -266,6 +274,7 @@ func TestPeer_BidirectionalData(t *testing.T) {
 	}
 
 	// Cleanup.
+	close(done)
 	close(candidatesForB)
 	close(candidatesForA)
 	wg.Wait()
@@ -279,14 +288,13 @@ func TestPeer_DataChannelUnreliableUnordered(t *testing.T) {
 	dcOpenB := make(chan *pionwebrtc.DataChannel, 1)
 	candidatesForB := make(chan string, 32)
 	candidatesForA := make(chan string, 32)
+	done := make(chan struct{})
 
 	peerA, err := NewPeer(PeerConfig{
-		ICE:      localICEConfig(),
-		LocalID:  "peer-a",
-		RemoteID: "peer-b",
-		OnICECandidate: func(candidate string) {
-			candidatesForB <- candidate
-		},
+		ICE:            localICEConfig(),
+		LocalID:        "peer-a",
+		RemoteID:       "peer-b",
+		OnICECandidate: safeCandidateSender(candidatesForB, done),
 	})
 	if err != nil {
 		t.Fatalf("NewPeer(A) error: %v", err)
@@ -294,12 +302,10 @@ func TestPeer_DataChannelUnreliableUnordered(t *testing.T) {
 	defer peerA.Close()
 
 	peerB, err := NewPeer(PeerConfig{
-		ICE:      localICEConfig(),
-		LocalID:  "peer-b",
-		RemoteID: "peer-a",
-		OnICECandidate: func(candidate string) {
-			candidatesForA <- candidate
-		},
+		ICE:            localICEConfig(),
+		LocalID:        "peer-b",
+		RemoteID:       "peer-a",
+		OnICECandidate: safeCandidateSender(candidatesForA, done),
 		OnDataChannel: func(dc *pionwebrtc.DataChannel) {
 			dcOpenB <- dc
 		},
@@ -364,6 +370,7 @@ func TestPeer_DataChannelUnreliableUnordered(t *testing.T) {
 		t.Fatal("timed out waiting for data channel on peer B")
 	}
 
+	close(done)
 	close(candidatesForB)
 	close(candidatesForA)
 	wg.Wait()
@@ -376,17 +383,16 @@ func TestPeer_ConnectionStateCallback(t *testing.T) {
 
 	candidatesForB := make(chan string, 32)
 	candidatesForA := make(chan string, 32)
+	done := make(chan struct{})
 
 	statesA := make(chan pionwebrtc.ICEConnectionState, 8)
 	statesB := make(chan pionwebrtc.ICEConnectionState, 8)
 
 	peerA, err := NewPeer(PeerConfig{
-		ICE:      localICEConfig(),
-		LocalID:  "peer-a",
-		RemoteID: "peer-b",
-		OnICECandidate: func(candidate string) {
-			candidatesForB <- candidate
-		},
+		ICE:            localICEConfig(),
+		LocalID:        "peer-a",
+		RemoteID:       "peer-b",
+		OnICECandidate: safeCandidateSender(candidatesForB, done),
 		OnConnectionStateChange: func(state pionwebrtc.ICEConnectionState) {
 			statesA <- state
 		},
@@ -397,12 +403,10 @@ func TestPeer_ConnectionStateCallback(t *testing.T) {
 	defer peerA.Close()
 
 	peerB, err := NewPeer(PeerConfig{
-		ICE:      localICEConfig(),
-		LocalID:  "peer-b",
-		RemoteID: "peer-a",
-		OnICECandidate: func(candidate string) {
-			candidatesForA <- candidate
-		},
+		ICE:            localICEConfig(),
+		LocalID:        "peer-b",
+		RemoteID:       "peer-a",
+		OnICECandidate: safeCandidateSender(candidatesForA, done),
 		OnConnectionStateChange: func(state pionwebrtc.ICEConnectionState) {
 			statesB <- state
 		},
@@ -454,6 +458,7 @@ func TestPeer_ConnectionStateCallback(t *testing.T) {
 		}
 	}
 
+	close(done)
 	close(candidatesForB)
 	close(candidatesForA)
 	wg.Wait()

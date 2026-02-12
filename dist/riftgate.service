@@ -1,0 +1,45 @@
+[Unit]
+Description=riftgate - WireGuard VPN tunnel over WebRTC
+Documentation=https://github.com/kuuji/riftgate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/riftgate up
+Restart=on-failure
+RestartSec=5
+
+# Runtime directory for the control socket.
+RuntimeDirectory=riftgate
+RuntimeDirectoryMode=0755
+
+# Security hardening.
+# riftgate needs CAP_NET_ADMIN to create TUN devices and configure interfaces,
+# and CAP_NET_RAW for raw socket operations used by WireGuard.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+
+# Filesystem restrictions.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/riftgate
+PrivateTmp=yes
+
+# Network access (required).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+# System call filtering.
+SystemCallArchitectures=native
+LockPersonality=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

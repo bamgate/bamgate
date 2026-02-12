@@ -14,14 +14,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os/exec"
-	"strings"
 	"sync"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
 	"github.com/kuuji/riftgate/internal/bridge"
 	"github.com/kuuji/riftgate/internal/config"
+	"github.com/kuuji/riftgate/internal/control"
 	"github.com/kuuji/riftgate/internal/signaling"
 	"github.com/kuuji/riftgate/internal/tunnel"
 	rtcpkg "github.com/kuuji/riftgate/internal/webrtc"
@@ -38,16 +38,37 @@ type Agent struct {
 	bind      *bridge.Bind
 	wgDevice  *tunnel.Device
 	sigClient *signaling.Client
+	ctrlSrv   *control.Server
 
-	mu    sync.Mutex
-	peers map[string]*peerState // peerID -> state
+	startedAt time.Time
+	mu        sync.Mutex
+	peers     map[string]*peerState // peerID -> state
 }
+
+const (
+	// maxICERestarts is the maximum number of ICE restarts to attempt
+	// before tearing down the peer connection entirely.
+	maxICERestarts = 3
+
+	// iceDisconnectGrace is how long to wait after an ICE disconnection
+	// before triggering an ICE restart. ICE may recover on its own if the
+	// network blip is short.
+	iceDisconnectGrace = 5 * time.Second
+)
 
 // peerState tracks the state of a single remote peer.
 type peerState struct {
 	rtcPeer   *rtcpkg.Peer
 	publicKey config.Key // WireGuard public key
 	address   string     // WireGuard tunnel address (e.g. "10.0.0.3/24")
+	routes    []string   // additional subnets reachable through this peer
+
+	connectedAt time.Time // when the data channel opened
+
+	// ICE restart tracking.
+	iceRestarts    int         // number of restarts attempted
+	disconnectTime time.Time   // when ICE entered disconnected state
+	restartTimer   *time.Timer // grace period timer (nil = not running)
 }
 
 // New creates a new Agent with the given configuration.
@@ -100,13 +121,22 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("configuring TUN interface: %w", err)
 	}
 
-	// 5. Connect to signaling server.
+	// 5. Start control server for "riftgate status".
+	a.startedAt = time.Now()
+	a.ctrlSrv = control.NewServer(control.ResolveSocketPath(), a.Status, a.log)
+	if err := a.ctrlSrv.Start(); err != nil {
+		a.log.Warn("control server failed to start (status command will be unavailable)", "error", err)
+		// Non-fatal — agent can run without the control server.
+	}
+
+	// 6. Connect to signaling server.
 	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)
 	a.sigClient = signaling.NewClient(signaling.ClientConfig{
 		ServerURL: a.cfg.Network.ServerURL,
 		PeerID:    a.cfg.Device.Name,
 		PublicKey: pubKey.String(),
 		Address:   a.cfg.Device.Address,
+		Routes:    a.cfg.Device.Routes,
 		AuthToken: a.cfg.Network.AuthToken,
 		Logger:    a.log,
 		Reconnect: signaling.ReconnectConfig{
@@ -172,23 +202,24 @@ func (a *Agent) handleMessage(ctx context.Context, msg protocol.Message) error {
 func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) error {
 	a.log.Info("received peer list", "count", len(msg.Peers))
 	for _, p := range msg.Peers {
-		a.log.Info("discovered peer", "peer_id", p.PeerID, "public_key", p.PublicKey, "address", p.Address)
+		a.log.Info("discovered peer", "peer_id", p.PeerID, "public_key", p.PublicKey, "address", p.Address, "routes", p.Routes)
 
 		// Determine who offers: the peer with the smaller ID.
 		if a.cfg.Device.Name < p.PeerID {
-			if err := a.initiateConnection(ctx, p.PeerID, p.PublicKey, p.Address); err != nil {
+			if err := a.initiateConnection(ctx, p.PeerID, p.PublicKey, p.Address, p.Routes); err != nil {
 				a.log.Error("initiating connection", "peer_id", p.PeerID, "error", err)
 			}
 		} else {
 			// We'll receive an offer from this peer. Pre-store their address
-			// so it's available when the data channel opens.
+			// and routes so they're available when the data channel opens.
 			a.mu.Lock()
 			if ps, ok := a.peers[p.PeerID]; ok {
 				ps.address = p.Address
+				ps.routes = p.Routes
 			} else {
-				// Peer state not yet created; store address for later.
+				// Peer state not yet created; store address/routes for later.
 				// createRTCPeer will be called when the offer arrives.
-				a.peers[p.PeerID] = &peerState{address: p.Address}
+				a.peers[p.PeerID] = &peerState{address: p.Address, routes: p.Routes}
 			}
 			a.mu.Unlock()
 		}
@@ -278,7 +309,7 @@ func (a *Agent) handlePeerLeft(msg *protocol.PeerLeftMessage) error {
 
 // initiateConnection creates a WebRTC peer and sends an SDP offer to the
 // remote peer via signaling.
-func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, address string) error {
+func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, address string, routes []string) error {
 	a.log.Info("initiating connection", "peer_id", peerID)
 
 	// Store the public key so we can configure WireGuard when the data
@@ -302,11 +333,12 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, addre
 		return fmt.Errorf("creating RTC peer: %w", err)
 	}
 
-	// Store the WireGuard public key and tunnel address.
+	// Store the WireGuard public key, tunnel address, and routes.
 	a.mu.Lock()
 	if ps, ok := a.peers[peerID]; ok {
 		ps.publicKey = wgPubKey
 		ps.address = address
+		ps.routes = routes
 	}
 	a.mu.Unlock()
 
@@ -352,12 +384,7 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 		},
 
 		OnConnectionStateChange: func(state webrtc.ICEConnectionState) {
-			if state == webrtc.ICEConnectionStateFailed ||
-				state == webrtc.ICEConnectionStateDisconnected {
-				a.log.Warn("ICE connection failed/disconnected, removing peer",
-					"peer_id", peerID, "state", state.String())
-				a.removePeer(peerID)
-			}
+			a.handleICEStateChange(ctx, peerID, state)
 		},
 	})
 	if err != nil {
@@ -386,6 +413,13 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 	// Register the data channel in our custom Bind.
 	a.bind.SetDataChannel(peerID, dc)
 
+	// Track when this peer's data channel opened.
+	a.mu.Lock()
+	if ps, ok := a.peers[peerID]; ok {
+		ps.connectedAt = time.Now()
+	}
+	a.mu.Unlock()
+
 	// Look up the peer's WireGuard public key.
 	a.mu.Lock()
 	ps, ok := a.peers[peerID]
@@ -397,7 +431,8 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 		return
 	}
 
-	// Determine the peer's WireGuard allowed IPs from their tunnel address.
+	// Determine the peer's WireGuard allowed IPs from their tunnel address
+	// and any additional routes they advertise.
 	// The address comes from the peers list (e.g. "10.0.0.3/24"). We extract
 	// the host IP and use a /32 so each peer only routes its own address.
 	allowedIPs := []string{"0.0.0.0/0", "::/0"} // fallback if no address
@@ -408,8 +443,19 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 				"peer_id", peerID, "address", ps.address, "error", err)
 		} else {
 			allowedIPs = []string{ip.String() + "/32"}
+
+			// Append validated advertised routes from the peer.
+			for _, route := range ps.routes {
+				if !isValidRoute(route) {
+					a.log.Warn("ignoring invalid or dangerous route from peer",
+						"peer_id", peerID, "route", route)
+					continue
+				}
+				allowedIPs = append(allowedIPs, route)
+			}
+
 			a.log.Info("using peer-specific AllowedIPs",
-				"peer_id", peerID, "allowed_ips", allowedIPs[0])
+				"peer_id", peerID, "allowed_ips", allowedIPs)
 		}
 	} else {
 		a.log.Warn("peer has no tunnel address, using default AllowedIPs",
@@ -436,6 +482,11 @@ func (a *Agent) removePeer(peerID string) {
 		a.mu.Unlock()
 		return
 	}
+	// Stop any pending ICE restart timer.
+	if ps.restartTimer != nil {
+		ps.restartTimer.Stop()
+		ps.restartTimer = nil
+	}
 	delete(a.peers, peerID)
 	a.mu.Unlock()
 
@@ -457,9 +508,157 @@ func (a *Agent) removePeer(peerID string) {
 	}
 }
 
+// Status returns the current agent status for the control server.
+func (a *Agent) Status() control.Status {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	peers := make([]control.PeerStatus, 0, len(a.peers))
+	for id, ps := range a.peers {
+		peerStatus := control.PeerStatus{
+			ID:      id,
+			Address: ps.address,
+			Routes:  ps.routes,
+		}
+
+		if ps.rtcPeer != nil {
+			peerStatus.State = ps.rtcPeer.ConnectionState().String()
+			peerStatus.ICEType = ps.rtcPeer.ICECandidateType()
+		} else {
+			peerStatus.State = "initializing"
+		}
+
+		if !ps.connectedAt.IsZero() {
+			peerStatus.ConnectedSince = ps.connectedAt
+		}
+
+		peers = append(peers, peerStatus)
+	}
+
+	return control.Status{
+		Device:        a.cfg.Device.Name,
+		Address:       a.cfg.Device.Address,
+		ServerURL:     a.cfg.Network.ServerURL,
+		UptimeSeconds: time.Since(a.startedAt).Seconds(),
+		Peers:         peers,
+	}
+}
+
+// handleICEStateChange reacts to ICE connection state transitions for a peer.
+// Instead of immediately removing a peer on failure, it attempts ICE restarts
+// with a grace period for transient disconnections.
+func (a *Agent) handleICEStateChange(ctx context.Context, peerID string, state webrtc.ICEConnectionState) {
+	a.mu.Lock()
+	ps, ok := a.peers[peerID]
+	if !ok {
+		a.mu.Unlock()
+		return
+	}
+
+	switch state {
+	case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
+		// Connection (re-)established. Reset restart counter and cancel any
+		// pending grace timer.
+		ps.iceRestarts = 0
+		if ps.restartTimer != nil {
+			ps.restartTimer.Stop()
+			ps.restartTimer = nil
+		}
+		a.mu.Unlock()
+		a.log.Info("ICE connection established", "peer_id", peerID, "state", state.String())
+
+	case webrtc.ICEConnectionStateDisconnected:
+		// Transient disconnection — start a grace timer. ICE may reconnect
+		// on its own (e.g. after a brief wifi dropout).
+		if ps.restartTimer != nil {
+			// Timer already running.
+			a.mu.Unlock()
+			return
+		}
+		ps.disconnectTime = time.Now()
+		a.log.Warn("ICE disconnected, starting grace period",
+			"peer_id", peerID, "grace", iceDisconnectGrace)
+		ps.restartTimer = time.AfterFunc(iceDisconnectGrace, func() {
+			a.attemptICERestart(ctx, peerID)
+		})
+		a.mu.Unlock()
+
+	case webrtc.ICEConnectionStateFailed:
+		// Hard failure — attempt restart immediately.
+		if ps.restartTimer != nil {
+			ps.restartTimer.Stop()
+			ps.restartTimer = nil
+		}
+		a.mu.Unlock()
+		a.log.Warn("ICE connection failed, attempting restart", "peer_id", peerID)
+		a.attemptICERestart(ctx, peerID)
+
+	default:
+		a.mu.Unlock()
+	}
+}
+
+// attemptICERestart tries to restart the ICE transport for a peer. If the
+// maximum number of restart attempts is exceeded, the peer is removed.
+func (a *Agent) attemptICERestart(ctx context.Context, peerID string) {
+	a.mu.Lock()
+	ps, ok := a.peers[peerID]
+	if !ok {
+		a.mu.Unlock()
+		return
+	}
+
+	ps.iceRestarts++
+	attempt := ps.iceRestarts
+	ps.restartTimer = nil
+
+	if attempt > maxICERestarts {
+		a.mu.Unlock()
+		a.log.Error("ICE restart attempts exhausted, removing peer",
+			"peer_id", peerID, "attempts", attempt-1)
+		a.removePeer(peerID)
+		return
+	}
+
+	rtcPeer := ps.rtcPeer
+	a.mu.Unlock()
+
+	if rtcPeer == nil {
+		return
+	}
+
+	a.log.Info("ICE restart attempt", "peer_id", peerID, "attempt", attempt, "max", maxICERestarts)
+
+	offerSDP, err := rtcPeer.RestartICE()
+	if err != nil {
+		a.log.Error("ICE restart failed", "peer_id", peerID, "error", err)
+		a.removePeer(peerID)
+		return
+	}
+
+	// Send the restart offer through signaling.
+	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)
+	if err := a.sigClient.Send(ctx, &protocol.OfferMessage{
+		From:      a.cfg.Device.Name,
+		To:        peerID,
+		SDP:       offerSDP,
+		PublicKey: pubKey.String(),
+	}); err != nil {
+		a.log.Error("sending ICE restart offer", "peer_id", peerID, "error", err)
+		// Don't remove peer — signaling might reconnect and we can retry.
+	}
+}
+
 // shutdown tears down all peer connections.
 func (a *Agent) shutdown() {
 	a.log.Info("shutting down agent")
+
+	// Stop control server.
+	if a.ctrlSrv != nil {
+		if err := a.ctrlSrv.Stop(); err != nil {
+			a.log.Error("stopping control server", "error", err)
+		}
+	}
 
 	// Close signaling client.
 	if a.sigClient != nil {
@@ -489,8 +688,8 @@ func (a *Agent) shutdown() {
 }
 
 // configureTUN configures the TUN interface with an IP address and brings it up.
-// It shells out to the `ip` command since this runs as root anyway (TUN creation
-// requires CAP_NET_ADMIN). A netlink dependency can replace this later.
+// Uses raw netlink syscalls so there is no dependency on the `ip` binary.
+// Requires CAP_NET_ADMIN.
 func (a *Agent) configureTUN(ifName string) error {
 	addr := a.cfg.Device.Address
 	if addr == "" {
@@ -503,16 +702,32 @@ func (a *Agent) configureTUN(ifName string) error {
 		return fmt.Errorf("invalid device address %q: %w", addr, err)
 	}
 
-	// ip addr add <address> dev <ifName>
-	if out, err := exec.Command("ip", "addr", "add", addr, "dev", ifName).CombinedOutput(); err != nil {
-		return fmt.Errorf("ip addr add: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := tunnel.AddAddress(ifName, addr); err != nil {
+		return fmt.Errorf("adding address to %s: %w", ifName, err)
 	}
 
-	// ip link set <ifName> up
-	if out, err := exec.Command("ip", "link", "set", ifName, "up").CombinedOutput(); err != nil {
-		return fmt.Errorf("ip link set up: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := tunnel.SetLinkUp(ifName); err != nil {
+		return fmt.Errorf("bringing up %s: %w", ifName, err)
 	}
 
 	a.log.Info("TUN interface configured", "name", ifName, "address", addr)
 	return nil
+}
+
+// dangerousRoutes are CIDR prefixes that peers should never be allowed to
+// advertise. Accepting 0.0.0.0/0 or ::/0 from a peer would override the
+// default route, which is almost certainly unintended in a mesh VPN.
+var dangerousRoutes = map[string]bool{
+	"0.0.0.0/0": true,
+	"::/0":      true,
+}
+
+// isValidRoute checks that a route string is a valid CIDR and not a
+// dangerous catch-all route.
+func isValidRoute(route string) bool {
+	if dangerousRoutes[route] {
+		return false
+	}
+	_, _, err := net.ParseCIDR(route)
+	return err == nil
 }

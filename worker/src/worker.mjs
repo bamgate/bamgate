@@ -5,7 +5,7 @@
 // 2. The SignalingRoom Durable Object class (WebSocket Hibernation API)
 //
 // The DO class bridges WebSocket events to Go/Wasm callbacks:
-//   JS → Go: goOnJoin(wsId, peerId, publicKey), goOnMessage(wsId, json), goOnLeave(wsId)
+//   JS → Go: goOnJoin(wsId, peerId, publicKey, address, routesJSON), goOnMessage(wsId, json), goOnLeave(wsId)
 //   Go → JS: jsSend(wsId, json)
 
 import "./wasm_exec.js";
@@ -110,7 +110,7 @@ export class SignalingRoom {
       if (attachment.wsId >= maxWsId) {
         maxWsId = attachment.wsId + 1;
       }
-      globalThis.goOnRehydrate(attachment.wsId, attachment.peerId, attachment.publicKey || "", attachment.address || "");
+      globalThis.goOnRehydrate(attachment.wsId, attachment.peerId, attachment.publicKey || "", attachment.address || "", JSON.stringify(attachment.routes || []));
     }
     this.nextWsId = maxWsId;
   }
@@ -188,10 +188,11 @@ export class SignalingRoom {
         peerId: msg.peerId,
         publicKey: msg.publicKey || "",
         address: msg.address || "",
+        routes: msg.routes || [],
       });
 
       // Notify Go hub.
-      globalThis.goOnJoin(wsId, msg.peerId, msg.publicKey || "", msg.address || "");
+      globalThis.goOnJoin(wsId, msg.peerId, msg.publicKey || "", msg.address || "", JSON.stringify(msg.routes || []));
       return;
     }
 

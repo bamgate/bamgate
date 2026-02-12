@@ -20,6 +20,11 @@ func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
 			wantTyp: "join",
 		},
 		{
+			name:    "join/with-routes",
+			msg:     &JoinMessage{PeerID: "home-server", PublicKey: "abc123", Address: "10.0.0.1/24", Routes: []string{"192.168.1.0/24", "10.10.0.0/16"}},
+			wantTyp: "join",
+		},
+		{
 			name:    "offer",
 			msg:     &OfferMessage{From: "laptop", To: "home-server", SDP: "v=0\r\noffer"},
 			wantTyp: "offer",
@@ -39,6 +44,14 @@ func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
 			msg: &PeersMessage{Peers: []PeerInfo{
 				{PeerID: "home-server", PublicKey: "key1"},
 				{PeerID: "laptop", PublicKey: "key2"},
+			}},
+			wantTyp: "peers",
+		},
+		{
+			name: "peers/with-routes",
+			msg: &PeersMessage{Peers: []PeerInfo{
+				{PeerID: "home-server", PublicKey: "key1", Address: "10.0.0.1/24", Routes: []string{"192.168.1.0/24"}},
+				{PeerID: "laptop", PublicKey: "key2", Address: "10.0.0.2/24"},
 			}},
 			wantTyp: "peers",
 		},

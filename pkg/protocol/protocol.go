@@ -20,16 +20,18 @@ type Message interface {
 
 // PeerInfo describes a connected peer, used in the PeersMessage.
 type PeerInfo struct {
-	PeerID    string `json:"peerId"`
-	PublicKey string `json:"publicKey"`
-	Address   string `json:"address,omitempty"`
+	PeerID    string   `json:"peerId"`
+	PublicKey string   `json:"publicKey"`
+	Address   string   `json:"address,omitempty"`
+	Routes    []string `json:"routes,omitempty"`
 }
 
 // JoinMessage is sent by a client to announce itself to the signaling hub.
 type JoinMessage struct {
-	PeerID    string `json:"peerId"`
-	PublicKey string `json:"publicKey"`
-	Address   string `json:"address,omitempty"`
+	PeerID    string   `json:"peerId"`
+	PublicKey string   `json:"publicKey"`
+	Address   string   `json:"address,omitempty"`
+	Routes    []string `json:"routes,omitempty"`
 }
 
 func (JoinMessage) MessageType() string { return "join" }

@@ -179,6 +179,24 @@ func (p *Peer) SetAnswer(sdp string) error {
 	return nil
 }
 
+// RestartICE creates a new SDP offer with the ICE restart flag set. The
+// existing data channel and SCTP association survive — only the ICE transport
+// is renegotiated. The caller should send the returned SDP to the remote peer,
+// then apply the answer via SetAnswer.
+func (p *Peer) RestartICE() (string, error) {
+	offer, err := p.pc.CreateOffer(&webrtc.OfferOptions{ICERestart: true})
+	if err != nil {
+		return "", fmt.Errorf("creating ICE restart offer: %w", err)
+	}
+
+	if err := p.pc.SetLocalDescription(offer); err != nil {
+		return "", fmt.Errorf("setting local description for ICE restart: %w", err)
+	}
+
+	p.log.Info("ICE restart initiated")
+	return offer.SDP, nil
+}
+
 // AddICECandidate adds a remote ICE candidate received via the signaling channel.
 func (p *Peer) AddICECandidate(candidate string) error {
 	if err := p.pc.AddICECandidate(webrtc.ICECandidateInit{
@@ -196,6 +214,22 @@ func (p *Peer) DataChannel() *webrtc.DataChannel {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.dc
+}
+
+// ICECandidateType returns the type of the selected local ICE candidate
+// (e.g. "host", "srflx", "relay") or "unknown" if no pair is selected.
+// This indicates whether the connection is direct or relayed.
+func (p *Peer) ICECandidateType() string {
+	pair, err := p.pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair()
+	if err != nil || pair == nil {
+		return "unknown"
+	}
+	return pair.Local.Typ.String()
+}
+
+// ConnectionState returns the current ICE connection state.
+func (p *Peer) ConnectionState() webrtc.ICEConnectionState {
+	return p.pc.ICEConnectionState()
 }
 
 // Done returns a channel that is closed when the peer connection is

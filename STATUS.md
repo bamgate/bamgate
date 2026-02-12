@@ -1,12 +1,13 @@
 # riftgate — Project Status
 
-Last updated: 2026-02-10
+Last updated: 2026-02-12
 
 ## Current Phase
 
 **Phase 1: Go Client Core (Signaling + WebRTC)** — Complete
 **Phase 2: WireGuard Integration** — Complete (tested end-to-end, tunnel working)
 **Phase 3: Cloudflare Worker (Signaling Server)** — Complete (deployed, multi-peer tested)
+**Phase 5: CLI Polish & Resilience** — Complete
 
 See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 
@@ -47,15 +48,147 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 - **DO hibernation state recovery**: After Cloudflare hibernates the Durable Object, Wasm is re-instantiated with empty state but WebSocket connections survive. Added `_rehydrate()` in JS that restores Go hub peer state from WebSocket attachments via `goOnRehydrate` callback.
 - **Deployed to Cloudflare**: Worker live at `https://riftgate.ag94441.workers.dev` (432KB total upload). Tested with 3 peers across the internet (2 home LAN machines + DigitalOcean droplet).
 - **Peer-specific AllowedIPs routing**: Fixed critical bug where every WireGuard peer got `AllowedIPs: 0.0.0.0/0`, causing last-added peer's route to override all previous peers. Now exchanges tunnel addresses via signaling (`Address` field in `JoinMessage`/`PeerInfo`), extracts host IP from CIDR, and uses `/32` AllowedIP per peer. Full pipeline: client → signaling → worker hub → peers list → agent → WireGuard config.
+- **CLI subcommand framework** (`cmd/riftgate/`): Restructured CLI using Cobra with subcommands: `up` (connect), `init` (setup wizard), `status` (query agent), `genkey` (generate WireGuard key). Global `--config` and `-v` flags inherited by all subcommands.
+- **`riftgate init` command**: Interactive setup wizard that generates a WireGuard key pair, prompts for device name (default: hostname), server URL, auth token, tunnel address, and network name. Writes `config.toml` with 0600 permissions. Detects and prompts before overwriting existing config.
+- **`riftgate genkey` command**: Generates a new Curve25519 private key (stdout, pipe-friendly) and prints the corresponding public key to stderr.
+- **Subnet routing**: Peers can advertise additional subnets via `routes` field in `[device]` config. Routes propagate through signaling (`Routes` field in `JoinMessage`/`PeerInfo`), through the Worker DO, and are added as WireGuard AllowedIPs on remote peers. Dangerous routes (`0.0.0.0/0`, `::/0`) and invalid CIDRs are rejected with warnings.
+- **ICE restart / resilience**: Replaced immediate peer teardown on ICE failure with a restart-then-remove strategy. `ICEConnectionStateDisconnected` triggers a 5-second grace period (ICE may self-recover). `ICEConnectionStateFailed` triggers an immediate ICE restart via `CreateOffer` with ICE restart flag. Up to 3 restart attempts before tearing down. `ICEConnectionStateConnected` resets the restart counter. Grace timers are cleaned up on peer removal.
+- **`riftgate status` command + control server** (`internal/control/`): Agent listens on Unix socket (`/run/riftgate/control.sock`) serving a JSON status API. Status includes device info, uptime, and per-peer state (address, ICE connection state, ICE candidate type, advertised routes, connected-since timestamp). `riftgate status` connects to the socket and displays a formatted table. Control server starts non-fatally (agent runs without it if socket creation fails).
+- **Systemd service** (`dist/riftgate.service`): Unit file with `Type=simple`, `Restart=on-failure`, capability-based hardening (`CAP_NET_ADMIN`, `CAP_NET_RAW`), filesystem restrictions (`ProtectSystem=strict`, `ProtectHome=read-only`), and runtime directory for the control socket.
+- **WebRTC test race fix**: Fixed pre-existing data race in `internal/webrtc/peer_test.go` where pion ICE gathering goroutines could send on closed candidate channels. Added `safeCandidateSender` helper using a `done` channel to guard sends during test teardown.
 
-## What's Next
+## Phase 5 Implementation Details
 
-**Phase 3 complete.** Next steps:
+Six work items, ordered by dependency. Skipping Phase 4 (TURN relay) for now — direct connections work for most NAT types.
+
+### 5.1 Subcommand Framework (Small)
+
+Restructure `cmd/riftgate/main.go` from a single implicit `up` command to proper subcommand CLI using stdlib `flag` with manual dispatch (no third-party CLI framework).
+
+**Subcommands:** `up`, `init`, `status`, `genkey`
+
+**Changes:**
+- `cmd/riftgate/main.go` — subcommand dispatch based on `os.Args[1]`
+- Each subcommand in its own file: `cmd_up.go`, `cmd_init.go`, `cmd_status.go`, `cmd_genkey.go`
+- Global flags (`--config`, `-v`) parsed before subcommand dispatch
+- Help text shows available commands
+
+### 5.2 `riftgate init` (Medium)
+
+Interactive setup wizard that generates a config file.
+
+**Flow:**
+1. Check if config already exists — warn and prompt to overwrite
+2. Generate WireGuard private key
+3. Prompt for: device name (default: hostname), server URL, auth token, tunnel address
+4. Write `config.toml` with 0600 permissions
+5. Print the derived public key
+
+**Changes:**
+- `cmd/riftgate/cmd_init.go` — interactive prompts via `bufio.Scanner`
+- Uses existing `config.SaveConfig()` and `config.GeneratePrivateKey()`
+
+### 5.3 Subnet Routing (Medium)
+
+Allow peers to advertise local subnets (e.g. `192.168.1.0/24`) so remote peers can reach home LAN services.
+
+**Config:** Add `routes` to `[device]` section:
+```toml
+[device]
+routes = ["192.168.1.0/24"]
+```
+
+**Signaling:** Add `Routes []string` to `JoinMessage` and `PeerInfo` in `pkg/protocol/`. Routes propagate through the Worker DO automatically.
+
+**Agent:** Include peer's advertised routes in AllowedIPs (in addition to `/32` host IP). Validate CIDRs, reject dangerous routes like `0.0.0.0/0`.
+
+**Changes:**
+- `internal/config/config.go` — add `Routes []string` to `DeviceConfig`
+- `pkg/protocol/protocol.go` — add `Routes` to `JoinMessage` and `PeerInfo`
+- `internal/signaling/client.go` — pass `Routes` in join message
+- `internal/agent/agent.go` — propagate routes to AllowedIPs
+- `worker/hub.go` — ensure routes field passes through
+- Tests for route propagation and validation
+
+### 5.4 ICE Restart / Resilience (Medium-Hard)
+
+Currently, ICE failure tears down the peer entirely. Instead, try an ICE restart first.
+
+**Approach:**
+- `ICEConnectionStateDisconnected` → start 5s timer, then ICE restart if not recovered
+- `ICEConnectionStateFailed` → immediate ICE restart
+- ICE restart: `CreateOffer` with ICE restart flag, send new offer via signaling, exchange new answer
+- Limit to 3 restart attempts, then tear down (current behavior)
+
+**Changes:**
+- `internal/webrtc/peer.go` — add `RestartICE()` method
+- `internal/agent/agent.go` — replace immediate `removePeer` with restart-then-remove strategy, per-peer restart counter/timer
+
+### 5.5 `riftgate status` via Unix Socket (Medium)
+
+**Agent side:** Listen on Unix socket at `/run/riftgate/control.sock`. Serve JSON status API.
+
+**Status response:**
+```json
+{
+  "device": "home-server",
+  "address": "10.0.0.1/24",
+  "server_url": "https://...",
+  "uptime_seconds": 3600,
+  "peers": [{
+    "id": "laptop",
+    "address": "10.0.0.2/24",
+    "state": "connected",
+    "ice_type": "host",
+    "routes": ["192.168.1.0/24"],
+    "connected_since": "2026-02-12T10:00:00Z"
+  }]
+}
+```
+
+**Changes:**
+- New `internal/control/server.go` — Unix socket HTTP server
+- `internal/agent/agent.go` — expose `Status()` method, start control server in `Run()`
+- `internal/webrtc/peer.go` — expose selected ICE candidate pair info
+- `cmd/riftgate/cmd_status.go` — connect to socket, format output as table
+
+### 5.6 Systemd Service (Small)
+
+Systemd unit file for running `riftgate up` as a persistent home agent.
+
+**Changes:**
+- `dist/riftgate.service` — `Type=simple`, `Restart=on-failure`, capability-based hardening (`CAP_NET_ADMIN`, `CAP_NET_RAW`), `ReadWritePaths=/run/riftgate`
+
+### Execution Order
+
+```
+5.1 Subcommand framework     ← foundation
+5.2 riftgate init             ← standalone after 5.1
+5.3 Subnet routing            ← protocol + agent, independent of CLI
+5.4 ICE restart / resilience  ← agent-only, independent of CLI
+5.5 riftgate status           ← needs control socket + agent state
+5.6 Systemd service           ← just a file, goes last
+```
+
+### Files Affected
+
+| Area | New files | Modified files |
+|------|-----------|----------------|
+| CLI | `cmd/riftgate/cmd_up.go`, `cmd_init.go`, `cmd_status.go`, `cmd_genkey.go` | `cmd/riftgate/main.go` |
+| Control | `internal/control/server.go` | — |
+| Config | — | `internal/config/config.go` |
+| Protocol | — | `pkg/protocol/protocol.go` |
+| Signaling | — | `internal/signaling/client.go` |
+| WebRTC | — | `internal/webrtc/peer.go` |
+| Agent | — | `internal/agent/agent.go` |
+| Worker | — | `worker/hub.go` |
+| Systemd | `dist/riftgate.service` | — |
+
+## What's Next (After Phase 5)
 
 1. **Phase 4: TURN relay** — For peers behind symmetric NAT where direct ICE fails. Options: Cloudflare Worker-based TURN relay or external TURN server.
-2. **Subnet routing** — Allow peers to advertise additional routable subnets (e.g. `192.168.1.0/24`) so remote peers can access home LAN services through the tunnel.
-3. **Rate limiting** — Add request rate limiting to the Worker `/connect` endpoint to prevent auth token brute-force and request quota abuse.
-4. **Android client** — gomobile build of the core library for Android.
+2. **Rate limiting** — Add request rate limiting to the Worker `/connect` endpoint to prevent auth token brute-force and request quota abuse.
+3. **Android client** — gomobile build of the core library for Android.
 
 ## Testing
 
@@ -68,9 +201,10 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Package | Files | Status |
 |---------|-------|--------|
-| `cmd/riftgate` | main.go | **Implemented** — minimal `up` command |
+| `cmd/riftgate` | main.go, cmd_up.go, cmd_init.go, cmd_status.go, cmd_genkey.go | **Implemented** — Cobra subcommands: up, init, status, genkey |
 | `cmd/riftgate-hub` | main.go | **Implemented** — standalone signaling server |
-| `internal/agent` | agent.go | **Implemented** — orchestrator |
+| `internal/agent` | agent.go, agent_test.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, control server |
+| `internal/control` | server.go, server_test.go | **Implemented + tested** — Unix socket status API |
 | `internal/bridge` | bridge.go, bridge_test.go | **Implemented + tested** |
 | `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** |
 | `internal/signaling` | client.go, hub.go, client_test.go | **Implemented + tested** |
@@ -87,6 +221,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 | `github.com/pion/webrtc/v4` | v4.2.3 | WebRTC stack (ICE, DTLS, SCTP, data channels) |
 | `github.com/BurntSushi/toml` | v1.6.0 | TOML config file parsing |
 | `golang.org/x/crypto` | v0.37.0 | Curve25519 key derivation (WireGuard keys) |
+| `github.com/spf13/cobra` | v1.10.2 | CLI subcommand framework |
 | `golang.zx2c4.com/wireguard` | v0.0.0-20250521 | Userspace WireGuard device + TUN interface |
 
 ## Open Questions / Decisions
@@ -95,6 +230,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 ## Changelog
 
+- **2026-02-12**: Phase 5 complete — CLI polish & resilience. Implemented all 6 work items: Cobra subcommand framework (up/init/status/genkey), interactive `riftgate init` wizard, subnet routing (config + protocol + agent + worker), ICE restart resilience (grace period + 3 retries), `riftgate status` via Unix socket control server, systemd service file. Fixed pre-existing WebRTC test race. All tests pass with `-race`.
 - **2026-02-10**: Fixed AllowedIPs routing bug — exchanged tunnel addresses via signaling, use per-peer `/32` AllowedIPs instead of `0.0.0.0/0`. All 3 peers can now ping each other simultaneously. Released v0.3.0.
 - **2026-02-10**: Phase 3 complete — deployed Cloudflare Worker signaling server. Tested with 3 peers across the internet. Fixed DO hibernation state loss with rehydration from WebSocket attachments. Added bearer token auth.
 - **2026-02-10**: Phase 3 implementation — Cloudflare Worker signaling server. Extracted protocol types to shared `pkg/protocol/` package (TinyGo-compatible). Scaffolded `worker/` with Go/Wasm Durable Object: JS shell with WebSocket Hibernation API bridges to Go hub logic via `syscall/js`. Added bearer token auth to signaling client and agent. Built with TinyGo (408KB Wasm binary). Tested full signaling flow locally with `wrangler dev`: peer join, peers list, offer/answer relay, ICE candidate relay, peer-left notification — all working. Key finding: `no_bundle = true` + `find_additional_modules = true` required to avoid esbuild bundling `wasm_exec.js` (which causes infinite recursion in Workers runtime).

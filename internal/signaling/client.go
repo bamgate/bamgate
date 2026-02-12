@@ -29,6 +29,10 @@ type ClientConfig struct {
 	// Address is this client's WireGuard tunnel address (e.g. "10.0.0.1/24").
 	Address string
 
+	// Routes is a list of additional subnets (CIDR notation) reachable through
+	// this device, advertised to peers via the join message.
+	Routes []string
+
 	// AuthToken is the bearer token for authenticating with the signaling server.
 	// If empty, no Authorization header is sent.
 	AuthToken string
@@ -215,6 +219,7 @@ func (c *Client) sendJoin(ctx context.Context) error {
 		PeerID:    c.cfg.PeerID,
 		PublicKey: c.cfg.PublicKey,
 		Address:   c.cfg.Address,
+		Routes:    c.cfg.Routes,
 	})
 }
 
