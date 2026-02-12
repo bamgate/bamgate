@@ -15,6 +15,19 @@ The entire project is written in **Go**:
 See `ARCHITECTURE.md` for the full design document.
 See `STATUS.md` for current project progress, what's been completed, and what to work on next.
 
+## Releasing
+
+When creating a release (commit + tag + `gh release create`):
+
+1. Update `STATUS.md` **before committing**:
+   - Add the new version to the **Releases** table
+   - Add a **Changelog** entry for the session
+2. Commit, tag (`git tag vX.Y.Z`), and push with `--tags`
+3. Create the GitHub release with `gh release create` — this triggers GoReleaser
+   via GitHub Actions to build binaries for linux/darwin (amd64 + arm64)
+4. Version is injected into the binary at build time via
+   `-ldflags "-X main.version={{.Version}}"` (configured in `.goreleaser.yaml`)
+
 ## Dependencies
 
 - Always use the **latest stable** version of Go and all third-party libraries.
