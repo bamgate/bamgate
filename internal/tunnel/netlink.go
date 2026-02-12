@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -341,6 +343,182 @@ func buildRouteMsg(msgType uint16, flags uint16, ifIndex int32, family uint8, pr
 	binary.LittleEndian.PutUint32(buf[off+rtaHdrLen:off+rtaHdrLen+4], uint32(ifIndex))
 
 	return buf
+}
+
+// --- IPv4 forwarding via netlink ---
+//
+// Per-interface IPv4 forwarding is controlled via the IFLA_AF_SPEC > AF_INET >
+// IFLA_INET_CONF netlink attribute. This avoids writing to /proc/sys, which
+// requires CAP_DAC_OVERRIDE or root. The netlink approach only requires
+// CAP_NET_ADMIN.
+//
+// The kernel's ipv4_devconf array indexes are defined in
+// include/uapi/linux/ip.h. The forwarding index is IPV4_DEVCONF_FORWARDING = 1.
+
+const (
+	// ipv4DevconfForwarding is the index into the ipv4_devconf array for the
+	// forwarding setting. Defined in include/uapi/linux/ip.h as
+	// IPV4_DEVCONF_FORWARDING = 1.
+	ipv4DevconfForwarding = 1
+)
+
+// GetForwarding reads the current IPv4 forwarding state for a network interface.
+// Returns true if forwarding is enabled. This reads from /proc/sys which is
+// world-readable and requires no special capabilities.
+func GetForwarding(ifName string) (bool, error) {
+	path := fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/forwarding", ifName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("reading forwarding state for %s: %w", ifName, err)
+	}
+	return strings.TrimSpace(string(data)) == "1", nil
+}
+
+// SetForwarding enables or disables IPv4 forwarding on a network interface
+// using netlink RTM_SETLINK with IFLA_AF_SPEC. This replaces writing to
+// /proc/sys/net/ipv4/conf/<ifName>/forwarding.
+// Requires CAP_NET_ADMIN.
+func SetForwarding(ifName string, enabled bool) error {
+	ifIndex, err := interfaceIndex(ifName)
+	if err != nil {
+		return err
+	}
+
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	if err != nil {
+		return fmt.Errorf("creating netlink socket: %w", err)
+	}
+	defer unix.Close(fd)
+
+	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+		return fmt.Errorf("binding netlink socket: %w", err)
+	}
+
+	msg := buildSetForwardingMsg(ifIndex, enabled)
+
+	if err := unix.Sendto(fd, msg, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+		return fmt.Errorf("sending RTM_SETLINK for forwarding: %w", err)
+	}
+
+	if err := readNetlinkAck(fd); err != nil {
+		return fmt.Errorf("setting forwarding on %s: %w", ifName, err)
+	}
+
+	return nil
+}
+
+// buildSetForwardingMsg constructs an RTM_SETLINK netlink message with nested
+// IFLA_AF_SPEC > AF_INET > IFLA_INET_CONF attributes to set IPv4 forwarding.
+//
+// The message structure is:
+//
+//	nlmsghdr
+//	ifinfomsg
+//	IFLA_AF_SPEC (nested) {
+//	    AF_INET (nested) {
+//	        IFLA_INET_CONF: [type=IPV4_DEVCONF_FORWARDING, value=0|1]
+//	    }
+//	}
+//
+// The IFLA_INET_CONF payload is an array of {type, value} pairs where type is
+// the nla_type (the devconf index) and value is a uint32.
+func buildSetForwardingMsg(ifIndex int32, enabled bool) []byte {
+	val := uint32(0)
+	if enabled {
+		val = 1
+	}
+
+	// Inner: IFLA_INET_CONF attribute containing one devconf entry.
+	// The kernel expects the devconf entries as nested rtattrs within
+	// IFLA_INET_CONF, where each nested attr has type = devconf index
+	// and data = uint32 value.
+	inetConfEntry := rtaAlignLen(rtaHdrLen + 4)  // single u32 entry
+	inetConfAttrLen := rtaHdrLen + inetConfEntry // IFLA_INET_CONF header + entry
+
+	// Middle: AF_INET attribute containing IFLA_INET_CONF.
+	afInetAttrLen := rtaHdrLen + rtaAlignLen(inetConfAttrLen)
+
+	// Outer: IFLA_AF_SPEC attribute containing AF_INET.
+	afSpecAttrLen := rtaHdrLen + rtaAlignLen(afInetAttrLen)
+
+	totalLen := nlmsgHdrLen + ifinfomsgLen + rtaAlignLen(afSpecAttrLen)
+	buf := make([]byte, totalLen)
+
+	// nlmsghdr
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(totalLen))
+	binary.LittleEndian.PutUint16(buf[4:6], unix.RTM_SETLINK)
+	binary.LittleEndian.PutUint16(buf[6:8], unix.NLM_F_REQUEST|unix.NLM_F_ACK)
+	binary.LittleEndian.PutUint32(buf[8:12], 1)  // nlmsg_seq
+	binary.LittleEndian.PutUint32(buf[12:16], 0) // nlmsg_pid
+
+	// ifinfomsg
+	off := nlmsgHdrLen
+	buf[off] = unix.AF_UNSPEC
+	binary.LittleEndian.PutUint32(buf[off+4:off+8], uint32(ifIndex))
+	// ifi_flags and ifi_change = 0 (not changing link flags)
+
+	// IFLA_AF_SPEC (NLA_F_NESTED | IFLA_AF_SPEC)
+	off = nlmsgHdrLen + ifinfomsgLen
+	binary.LittleEndian.PutUint16(buf[off:off+2], uint16(afSpecAttrLen))
+	binary.LittleEndian.PutUint16(buf[off+2:off+4], unix.NLA_F_NESTED|unix.IFLA_AF_SPEC)
+
+	// AF_INET (NLA_F_NESTED | AF_INET)
+	off += rtaHdrLen
+	binary.LittleEndian.PutUint16(buf[off:off+2], uint16(afInetAttrLen))
+	binary.LittleEndian.PutUint16(buf[off+2:off+4], unix.NLA_F_NESTED|unix.AF_INET)
+
+	// IFLA_INET_CONF
+	off += rtaHdrLen
+	binary.LittleEndian.PutUint16(buf[off:off+2], uint16(inetConfAttrLen))
+	binary.LittleEndian.PutUint16(buf[off+2:off+4], unix.IFLA_INET_CONF)
+
+	// Devconf entry: type = IPV4_DEVCONF_FORWARDING, value = 0 or 1.
+	off += rtaHdrLen
+	binary.LittleEndian.PutUint16(buf[off:off+2], uint16(rtaHdrLen+4))
+	binary.LittleEndian.PutUint16(buf[off+2:off+4], ipv4DevconfForwarding)
+	binary.LittleEndian.PutUint32(buf[off+rtaHdrLen:off+rtaHdrLen+4], val)
+
+	return buf
+}
+
+// FindInterfaceForSubnet returns the name of the network interface that has an
+// IP address within the given CIDR subnet. This is used to determine which
+// interface to masquerade on when forwarding traffic for an advertised route.
+//
+// For example, if the subnet is "192.168.1.0/24" and the host has
+// 192.168.1.233 on "wlan0", this returns "wlan0".
+func FindInterfaceForSubnet(cidr string) (string, error) {
+	_, subnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", fmt.Errorf("parsing CIDR %q: %w", cidr, err)
+	}
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("listing interfaces: %w", err)
+	}
+
+	for _, iface := range ifaces {
+		// Skip loopback and down interfaces.
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ip, _, err := net.ParseCIDR(addr.String())
+			if err != nil {
+				continue
+			}
+			if subnet.Contains(ip) {
+				return iface.Name, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no interface found with address in subnet %s", cidr)
 }
 
 // rtaAlignLen rounds a length up to the nearest 4-byte boundary (RTA_ALIGN).

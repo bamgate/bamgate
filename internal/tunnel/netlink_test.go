@@ -199,6 +199,113 @@ func TestBuildRouteMsg_Delete(t *testing.T) {
 	}
 }
 
+func TestBuildSetForwardingMsg_Enabled(t *testing.T) {
+	t.Parallel()
+
+	msg := buildSetForwardingMsg(9, true)
+
+	// Verify nlmsghdr.
+	msgLen := binary.LittleEndian.Uint32(msg[0:4])
+	if int(msgLen) != len(msg) {
+		t.Errorf("nlmsg_len = %d, want %d", msgLen, len(msg))
+	}
+	msgType := binary.LittleEndian.Uint16(msg[4:6])
+	if msgType != unix.RTM_SETLINK {
+		t.Errorf("nlmsg_type = %d, want RTM_SETLINK (%d)", msgType, unix.RTM_SETLINK)
+	}
+	flags := binary.LittleEndian.Uint16(msg[6:8])
+	wantFlags := uint16(unix.NLM_F_REQUEST | unix.NLM_F_ACK)
+	if flags != wantFlags {
+		t.Errorf("nlmsg_flags = 0x%x, want 0x%x", flags, wantFlags)
+	}
+
+	// Verify ifinfomsg.
+	off := nlmsgHdrLen
+	if msg[off] != unix.AF_UNSPEC {
+		t.Errorf("ifi_family = %d, want AF_UNSPEC", msg[off])
+	}
+	ifIndex := binary.LittleEndian.Uint32(msg[off+4 : off+8])
+	if ifIndex != 9 {
+		t.Errorf("ifi_index = %d, want 9", ifIndex)
+	}
+	// ifi_flags and ifi_change should be 0 (not changing link flags).
+	ifiFlags := binary.LittleEndian.Uint32(msg[off+8 : off+12])
+	if ifiFlags != 0 {
+		t.Errorf("ifi_flags = 0x%x, want 0", ifiFlags)
+	}
+	ifiChange := binary.LittleEndian.Uint32(msg[off+12 : off+16])
+	if ifiChange != 0 {
+		t.Errorf("ifi_change = 0x%x, want 0", ifiChange)
+	}
+
+	// Verify IFLA_AF_SPEC (nested).
+	off = nlmsgHdrLen + ifinfomsgLen
+	afSpecType := binary.LittleEndian.Uint16(msg[off+2 : off+4])
+	if afSpecType != unix.NLA_F_NESTED|unix.IFLA_AF_SPEC {
+		t.Errorf("IFLA_AF_SPEC type = 0x%x, want 0x%x", afSpecType, unix.NLA_F_NESTED|unix.IFLA_AF_SPEC)
+	}
+
+	// Verify AF_INET (nested).
+	off += rtaHdrLen
+	afInetType := binary.LittleEndian.Uint16(msg[off+2 : off+4])
+	if afInetType != unix.NLA_F_NESTED|unix.AF_INET {
+		t.Errorf("AF_INET type = 0x%x, want 0x%x", afInetType, unix.NLA_F_NESTED|unix.AF_INET)
+	}
+
+	// Verify IFLA_INET_CONF.
+	off += rtaHdrLen
+	inetConfType := binary.LittleEndian.Uint16(msg[off+2 : off+4])
+	if inetConfType != unix.IFLA_INET_CONF {
+		t.Errorf("IFLA_INET_CONF type = %d, want %d", inetConfType, unix.IFLA_INET_CONF)
+	}
+
+	// Verify the forwarding entry: type = 1 (IPV4_DEVCONF_FORWARDING), value = 1.
+	off += rtaHdrLen
+	entryType := binary.LittleEndian.Uint16(msg[off+2 : off+4])
+	if entryType != ipv4DevconfForwarding {
+		t.Errorf("devconf entry type = %d, want %d (IPV4_DEVCONF_FORWARDING)", entryType, ipv4DevconfForwarding)
+	}
+	val := binary.LittleEndian.Uint32(msg[off+rtaHdrLen : off+rtaHdrLen+4])
+	if val != 1 {
+		t.Errorf("forwarding value = %d, want 1", val)
+	}
+}
+
+func TestBuildSetForwardingMsg_Disabled(t *testing.T) {
+	t.Parallel()
+
+	msg := buildSetForwardingMsg(3, false)
+
+	// Navigate to the forwarding value (same structure as enabled test).
+	off := nlmsgHdrLen + ifinfomsgLen // IFLA_AF_SPEC
+	off += rtaHdrLen                  // AF_INET
+	off += rtaHdrLen                  // IFLA_INET_CONF
+	off += rtaHdrLen                  // forwarding entry
+
+	val := binary.LittleEndian.Uint32(msg[off+rtaHdrLen : off+rtaHdrLen+4])
+	if val != 0 {
+		t.Errorf("forwarding value = %d, want 0", val)
+	}
+}
+
+func TestBuildSetForwardingMsg_Length(t *testing.T) {
+	t.Parallel()
+
+	msgEnabled := buildSetForwardingMsg(1, true)
+	msgDisabled := buildSetForwardingMsg(1, false)
+
+	// Both messages should have the same length.
+	if len(msgEnabled) != len(msgDisabled) {
+		t.Errorf("enabled len = %d, disabled len = %d, expected equal", len(msgEnabled), len(msgDisabled))
+	}
+
+	// Verify nlmsg_len matches actual buffer size.
+	msgLen := binary.LittleEndian.Uint32(msgEnabled[0:4])
+	if int(msgLen) != len(msgEnabled) {
+		t.Errorf("nlmsg_len = %d, buf len = %d", msgLen, len(msgEnabled))
+	}
+}
+
 func TestRtaAlignLen(t *testing.T) {
 	t.Parallel()
 

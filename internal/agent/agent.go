@@ -41,9 +41,20 @@ type Agent struct {
 	sigClient *signaling.Client
 	ctrlSrv   *control.Server
 
+	// Forwarding and NAT state for cleanup on shutdown.
+	natManager      *tunnel.NATManager
+	forwardingState []forwardingSave // interfaces whose forwarding state was changed
+
 	startedAt time.Time
 	mu        sync.Mutex
 	peers     map[string]*peerState // peerID -> state
+}
+
+// forwardingSave records the previous forwarding state for an interface so it
+// can be restored on shutdown.
+type forwardingSave struct {
+	ifName          string
+	previousEnabled bool
 }
 
 const (
@@ -117,6 +128,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("creating WireGuard device: %w", err)
 	}
 	defer a.wgDevice.Close()
+	defer a.cleanupForwardingAndNAT()
 
 	// 4. Configure the TUN interface IP address and bring it up.
 	if err := a.configureTUN(actualName); err != nil {
@@ -717,6 +729,8 @@ func (a *Agent) shutdown() {
 }
 
 // configureTUN configures the TUN interface with an IP address and brings it up.
+// If the device has routes configured (advertising LAN subnets), it also enables
+// IP forwarding and sets up NAT masquerading.
 // Uses raw netlink syscalls so there is no dependency on the `ip` binary.
 // Requires CAP_NET_ADMIN.
 func (a *Agent) configureTUN(ifName string) error {
@@ -740,7 +754,125 @@ func (a *Agent) configureTUN(ifName string) error {
 	}
 
 	a.log.Info("TUN interface configured", "name", ifName, "address", addr)
+
+	// If this device advertises routes (e.g., 192.168.1.0/24), set up IP
+	// forwarding and NAT so remote peers can reach devices on those subnets.
+	if len(a.cfg.Device.Routes) > 0 {
+		if err := a.setupForwardingAndNAT(ifName); err != nil {
+			a.log.Warn("failed to set up forwarding/NAT (subnet routing may not work for remote peers)",
+				"error", err)
+			// Non-fatal: the tunnel itself still works for direct peer-to-peer traffic.
+		}
+	}
+
 	return nil
+}
+
+// setupForwardingAndNAT enables IP forwarding on the TUN interface and the
+// outgoing LAN interface for each advertised route, then sets up nftables
+// MASQUERADE rules so forwarded traffic has the correct source address.
+func (a *Agent) setupForwardingAndNAT(tunIface string) error {
+	// Enable forwarding on the TUN interface.
+	if err := a.enableForwarding(tunIface); err != nil {
+		return fmt.Errorf("enabling forwarding on %s: %w", tunIface, err)
+	}
+
+	// Set up NAT manager.
+	a.natManager = tunnel.NewNATManager(a.log)
+
+	// For each advertised route, find the outgoing interface and set up
+	// forwarding + masquerade.
+	for _, route := range a.cfg.Device.Routes {
+		if !isValidRoute(route) {
+			a.log.Warn("skipping invalid route for forwarding setup", "route", route)
+			continue
+		}
+
+		outIface, err := tunnel.FindInterfaceForSubnet(route)
+		if err != nil {
+			a.log.Warn("cannot find outgoing interface for route (masquerade not set up)",
+				"route", route, "error", err)
+			continue
+		}
+
+		// Enable forwarding on the outgoing interface.
+		if err := a.enableForwarding(outIface); err != nil {
+			a.log.Warn("enabling forwarding on outgoing interface",
+				"interface", outIface, "route", route, "error", err)
+			continue
+		}
+
+		// Set up masquerade: traffic from the WireGuard subnet going out
+		// through the LAN interface gets source NAT'd.
+		if err := a.natManager.SetupMasquerade(a.cfg.Device.Address, outIface); err != nil {
+			return fmt.Errorf("setting up masquerade for %s via %s: %w", route, outIface, err)
+		}
+
+		a.log.Info("forwarding and NAT configured for route",
+			"route", route, "out_iface", outIface, "tun_iface", tunIface)
+	}
+
+	return nil
+}
+
+// enableForwarding enables IPv4 forwarding on an interface, saving the previous
+// state so it can be restored on shutdown.
+func (a *Agent) enableForwarding(ifName string) error {
+	// Check if we already saved state for this interface (avoid duplicates).
+	for _, s := range a.forwardingState {
+		if s.ifName == ifName {
+			return nil // already handled
+		}
+	}
+
+	// Read current state before changing it.
+	wasEnabled, err := tunnel.GetForwarding(ifName)
+	if err != nil {
+		return fmt.Errorf("reading forwarding state for %s: %w", ifName, err)
+	}
+
+	a.forwardingState = append(a.forwardingState, forwardingSave{
+		ifName:          ifName,
+		previousEnabled: wasEnabled,
+	})
+
+	if wasEnabled {
+		a.log.Debug("forwarding already enabled", "interface", ifName)
+		return nil
+	}
+
+	if err := tunnel.SetForwarding(ifName, true); err != nil {
+		return fmt.Errorf("enabling forwarding on %s: %w", ifName, err)
+	}
+
+	a.log.Info("enabled IPv4 forwarding", "interface", ifName)
+	return nil
+}
+
+// cleanupForwardingAndNAT restores forwarding state and removes nftables rules.
+func (a *Agent) cleanupForwardingAndNAT() {
+	// Restore forwarding state for all modified interfaces.
+	for _, s := range a.forwardingState {
+		if s.previousEnabled {
+			continue // was already enabled, don't disable
+		}
+		if err := tunnel.SetForwarding(s.ifName, false); err != nil {
+			a.log.Warn("restoring forwarding state",
+				"interface", s.ifName, "error", err)
+		} else {
+			a.log.Info("restored IPv4 forwarding state",
+				"interface", s.ifName, "forwarding", false)
+		}
+	}
+	a.forwardingState = nil
+
+	// Remove nftables rules.
+	if a.natManager != nil {
+		if err := a.natManager.Cleanup(); err != nil {
+			a.log.Warn("cleaning up nftables rules", "error", err)
+		}
+		a.natManager = nil
+	}
 }
 
 // dangerousRoutes are CIDR prefixes that peers should never be allowed to
