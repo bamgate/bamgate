@@ -40,6 +40,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&globalVerbose, "verbose", "v", false, "enable debug logging")
 
 	rootCmd.AddCommand(upCmd)
+	rootCmd.AddCommand(downCmd)
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(genkeyCmd)

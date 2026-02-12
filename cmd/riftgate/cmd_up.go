@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -11,6 +14,8 @@ import (
 	"github.com/kuuji/riftgate/internal/agent"
 	"github.com/kuuji/riftgate/internal/config"
 )
+
+var upDaemon bool
 
 var upCmd = &cobra.Command{
 	Use:   "up",
@@ -23,12 +28,25 @@ network interface. You can grant this in one of three ways:
 
   1. Run 'sudo riftgate install' once to set capabilities on the binary
      (then 'riftgate up' works without sudo)
-  2. Run via the systemd service: sudo systemctl start riftgate
-  3. Run directly with sudo: sudo riftgate up`,
+  2. Run as a systemd service: sudo riftgate up -d
+  3. Run directly with sudo: sudo riftgate up
+
+Use -d/--daemon to start riftgate as a systemd service (enables on boot
+and starts immediately). Requires a prior 'sudo riftgate install --systemd'.`,
 	RunE: runUp,
 }
 
+const systemdServicePath = "/etc/systemd/system/riftgate.service"
+
+func init() {
+	upCmd.Flags().BoolVarP(&upDaemon, "daemon", "d", false, "start as a systemd service (enable + start)")
+}
+
 func runUp(cmd *cobra.Command, args []string) error {
+	if upDaemon {
+		return runUpDaemon()
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -54,6 +72,31 @@ func runUp(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("agent error: %w", err)
 	}
+
+	return nil
+}
+
+// runUpDaemon starts riftgate as a systemd service (enable + start).
+func runUpDaemon() error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("daemon mode is only supported on Linux")
+	}
+	if _, err := os.Stat(systemdServicePath); os.IsNotExist(err) {
+		return fmt.Errorf("systemd service not installed; run 'sudo riftgate install --systemd' first")
+	}
+
+	fmt.Fprintln(os.Stderr, "Enabling and starting riftgate service...")
+
+	systemctl := exec.Command("sudo", "systemctl", "enable", "--now", "riftgate")
+	systemctl.Stdout = os.Stderr
+	systemctl.Stderr = os.Stderr
+	if err := systemctl.Run(); err != nil {
+		return fmt.Errorf("systemctl enable --now riftgate: %w", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "riftgate is running and enabled on boot.")
+	fmt.Fprintln(os.Stderr, "Use 'riftgate status' to check connection state.")
+	fmt.Fprintln(os.Stderr, "Use 'riftgate down' to stop and disable.")
 
 	return nil
 }

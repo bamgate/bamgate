@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 
@@ -122,8 +123,33 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
+// resolveRealUser returns the non-root user who invoked sudo.
+// Falls back to the current user if SUDO_USER is not set.
+func resolveRealUser() (*user.User, error) {
+	username := os.Getenv("SUDO_USER")
+	if username == "" {
+		return user.Current()
+	}
+	return user.Lookup(username)
+}
+
 // installSystemdService writes the service file and updates the ExecStart path.
+// The service runs as the real user (from SUDO_USER), not root — capabilities
+// are granted via AmbientCapabilities.
 func installSystemdService(binaryPath string) error {
+	u, err := resolveRealUser()
+	if err != nil {
+		return fmt.Errorf("resolving user for systemd service: %w", err)
+	}
+
+	// Look up the user's primary group name.
+	grp, err := user.LookupGroupId(u.Gid)
+	if err != nil {
+		return fmt.Errorf("resolving group for uid %s: %w", u.Gid, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Service will run as user=%s group=%s\n", u.Username, grp.Name)
+
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=riftgate - WireGuard VPN tunnel over WebRTC
 Documentation=https://github.com/kuuji/riftgate
@@ -136,11 +162,17 @@ ExecStart=%s up
 Restart=on-failure
 RestartSec=5
 
+# Run as the installing user, not root. Capabilities are granted below.
+User=%s
+Group=%s
+
 # Runtime directory for the control socket.
 RuntimeDirectory=riftgate
 RuntimeDirectoryMode=0755
 
 # Security hardening.
+# riftgate needs CAP_NET_ADMIN to create TUN devices and configure interfaces,
+# and CAP_NET_RAW for raw socket operations used by WireGuard.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 NoNewPrivileges=yes
@@ -167,7 +199,7 @@ RestrictSUIDSGID=yes
 
 [Install]
 WantedBy=multi-user.target
-`, binaryPath)
+`, binaryPath, u.Username, grp.Name)
 
 	servicePath := "/etc/systemd/system/riftgate.service"
 	fmt.Fprintf(os.Stderr, "Installing systemd service to %s\n", servicePath)
