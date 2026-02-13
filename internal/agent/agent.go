@@ -217,6 +217,12 @@ func (a *Agent) handleMessage(ctx context.Context, msg protocol.Message) error {
 func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) error {
 	a.log.Info("received peer list", "count", len(msg.Peers))
 	for _, p := range msg.Peers {
+		// Skip ourselves — can appear after DO hibernation/rehydration or
+		// signaling reconnection.
+		if p.PeerID == a.cfg.Device.Name {
+			continue
+		}
+
 		a.log.Info("discovered peer", "peer_id", p.PeerID, "public_key", p.PublicKey, "address", p.Address, "routes", p.Routes)
 
 		// Determine who offers: the peer with the smaller ID.
