@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -26,16 +27,14 @@ var upCmd = &cobra.Command{
 	Long: `Start the bamgate agent: create a WireGuard tunnel, connect to the
 signaling server, and bridge traffic over WebRTC data channels.
 
-Requires CAP_NET_ADMIN to create the TUN device and configure the
-network interface. You can grant this in one of three ways:
+On Linux, requires CAP_NET_ADMIN capability. Run 'sudo bamgate setup'
+to set capabilities, then 'bamgate up' works without sudo.
 
-  1. Run 'sudo bamgate install' once to set capabilities on the binary
-     (then 'bamgate up' works without sudo)
-  2. Run as a systemd service: sudo bamgate up -d
-  3. Run directly with sudo: sudo bamgate up
+On macOS, run with sudo: sudo bamgate up
 
 Use -d/--daemon to start bamgate as a systemd service (enables on boot
-and starts immediately). Requires a prior 'sudo bamgate install --systemd'.`,
+and starts immediately). Requires 'sudo bamgate setup' with the systemd
+service option first.`,
 	RunE: runUp,
 }
 
@@ -79,6 +78,13 @@ func runUp(cmd *cobra.Command, args []string) error {
 			globalLogger.Info("bamgate stopped")
 			return nil
 		}
+		// Provide actionable guidance for TUN permission errors.
+		if strings.Contains(err.Error(), "operation not permitted") || strings.Contains(err.Error(), "not permitted") {
+			if runtime.GOOS == "darwin" {
+				return fmt.Errorf("agent error: %w\n\nTUN device creation requires root privileges.\nRun: sudo bamgate up", err)
+			}
+			return fmt.Errorf("agent error: %w\n\nMissing network capabilities. Run: sudo bamgate setup", err)
+		}
 		return fmt.Errorf("agent error: %w", err)
 	}
 
@@ -91,7 +97,7 @@ func runUpDaemon() error {
 		return fmt.Errorf("daemon mode (-d) requires systemd and is only supported on Linux; launchd support is not yet implemented\n\nRun 'sudo bamgate up' (without -d) to start in the foreground")
 	}
 	if _, err := os.Stat(systemdServicePath); os.IsNotExist(err) {
-		return fmt.Errorf("systemd service not installed; run 'sudo bamgate install --systemd' first")
+		return fmt.Errorf("systemd service not installed; run 'sudo bamgate setup' first and choose to install the systemd service")
 	}
 
 	fmt.Fprintln(os.Stderr, "Enabling and starting bamgate service...")

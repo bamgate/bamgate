@@ -24,6 +24,8 @@ import (
 	"github.com/kuuji/bamgate/internal/deploy"
 )
 
+var setupForce bool
+
 var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Set up bamgate: deploy signaling server and configure this device",
@@ -31,15 +33,22 @@ var setupCmd = &cobra.Command{
 
   1. Deploy the signaling worker to Cloudflare (or detect existing deployment)
   2. Configure this device (name, WireGuard keys, tunnel address)
-  3. Install the binary with required capabilities
+  3. Set network capabilities on the binary (Linux)
   4. Optionally install the systemd service
 
 If you have an invite code from another device, setup will use it to
 retrieve the server configuration automatically — no Cloudflare account needed.
 
+If bamgate is already configured, setup will re-apply capabilities and
+update the systemd service (if installed). Use --force to redo full setup.
+
 This command should be run with sudo:
   sudo bamgate setup`,
 	RunE: runSetup,
+}
+
+func init() {
+	setupCmd.Flags().BoolVar(&setupForce, "force", false, "redo full setup even if already configured")
 }
 
 func runSetup(cmd *cobra.Command, args []string) error {
@@ -51,9 +60,6 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("setup must be run as root (try: sudo bamgate setup)")
 	}
 
-	scanner := bufio.NewScanner(os.Stdin)
-	ctx := context.Background()
-
 	// Resolve the real (non-root) user who invoked sudo.
 	realUser, err := resolveRealUser()
 	if err != nil {
@@ -63,13 +69,57 @@ func runSetup(cmd *cobra.Command, args []string) error {
 
 	// Check for existing config.
 	existingCfg, _ := config.LoadConfig(cfgPath)
-	if existingCfg != nil {
+	if existingCfg != nil && !setupForce {
+		return runSetupExisting(cfgPath)
+	}
+
+	if existingCfg != nil && setupForce {
 		fmt.Fprintf(os.Stderr, "Existing config found: %s\n", cfgPath)
-		if !promptYesNo(scanner, "Overwrite?", false) {
-			fmt.Fprintln(os.Stderr, "Aborted.")
-			return nil
+		fmt.Fprintf(os.Stderr, "Overwriting (--force).\n\n")
+	}
+
+	return runSetupFull(cfgPath, realUser)
+}
+
+// runSetupExisting handles the case where bamgate is already configured.
+// It re-applies capabilities (Linux) and updates the systemd service if installed.
+func runSetupExisting(cfgPath string) error {
+	fmt.Fprintf(os.Stderr, "bamgate is already configured: %s\n\n", cfgPath)
+
+	// Set capabilities (Linux only).
+	if runtime.GOOS == "linux" {
+		if err := setCapabilities(); err != nil {
+			return err
+		}
+
+		// Update systemd service if it exists.
+		if _, err := os.Stat(systemdServicePath); err == nil {
+			binaryPath, err := resolveCurrentBinary()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "Updating systemd service...\n")
+			if err := installSystemdService(binaryPath); err != nil {
+				return fmt.Errorf("updating systemd service: %w", err)
+			}
 		}
 	}
+
+	fmt.Fprintf(os.Stderr, "\nSetup complete.")
+	if runtime.GOOS == "darwin" {
+		fmt.Fprintf(os.Stderr, " Run 'sudo bamgate up' to connect.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, " Run 'bamgate up' to connect.\n")
+	}
+	fmt.Fprintf(os.Stderr, "Use --force to redo full setup.\n")
+
+	return nil
+}
+
+// runSetupFull runs the full interactive setup wizard.
+func runSetupFull(cfgPath string, realUser *user.User) error {
+	scanner := bufio.NewScanner(os.Stdin)
+	ctx := context.Background()
 
 	fmt.Fprintf(os.Stderr, "\nbamgate setup\n")
 	fmt.Fprintf(os.Stderr, "%s\n\n", strings.Repeat("=", 14))
@@ -78,6 +128,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	hasInvite := promptYesNo(scanner, "Do you have an invite code from another device?", false)
 
 	var cfg *config.Config
+	var err error
 	if hasInvite {
 		cfg, err = setupWithInvite(ctx, scanner)
 	} else {
@@ -116,26 +167,26 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	chownForUser(cfgPath, realUser)
 	fmt.Fprintf(os.Stderr, "  Config written to %s\n", cfgPath)
 
-	// --- Install binary ---
+	// --- Set capabilities / install ---
 	fmt.Fprintf(os.Stderr, "\nInstallation\n")
 	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 12))
 
 	if runtime.GOOS == "linux" {
-		if err := installBinaryWithCaps("/usr/local"); err != nil {
-			return fmt.Errorf("installing binary: %w", err)
+		if err := setCapabilities(); err != nil {
+			return err
 		}
 
 		// Optionally install systemd service.
 		if promptYesNo(scanner, "Install systemd service?", true) {
-			destPath := "/usr/local/bin/bamgate"
-			if err := installSystemdService(destPath); err != nil {
+			binaryPath, err := resolveCurrentBinary()
+			if err != nil {
+				return err
+			}
+			if err := installSystemdService(binaryPath); err != nil {
 				return fmt.Errorf("installing systemd service: %w", err)
 			}
 		}
 	} else {
-		if err := installBinary("/usr/local"); err != nil {
-			return fmt.Errorf("installing binary: %w", err)
-		}
 		fmt.Fprintf(os.Stderr, "  Note: macOS requires sudo to run bamgate (no setcap equivalent).\n")
 	}
 
@@ -442,52 +493,135 @@ func generateAuthToken() (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return "rg_" + hex.EncodeToString(b), nil
+	return "bg_" + hex.EncodeToString(b), nil
 }
 
-// installBinaryWithCaps copies the running binary to the system path and
-// sets the required Linux capabilities.
-func installBinaryWithCaps(prefix string) error {
-	self, err := os.Executable()
+// setCapabilities sets CAP_NET_ADMIN and CAP_NET_RAW on the current binary
+// so bamgate can create TUN devices without running as root.
+// Only applicable on Linux.
+func setCapabilities() error {
+	binaryPath, err := resolveCurrentBinary()
 	if err != nil {
-		return fmt.Errorf("finding current binary: %w", err)
-	}
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		return fmt.Errorf("resolving binary path: %w", err)
+		return err
 	}
 
-	destDir := filepath.Join(prefix, "bin")
-	destPath := filepath.Join(destDir, "bamgate")
-
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return fmt.Errorf("creating %s: %w", destDir, err)
-	}
-
-	if self == destPath {
-		fmt.Fprintf(os.Stderr, "  Binary already at %s\n", destPath)
-	} else {
-		// Write to a temp file first, then atomically rename. This avoids
-		// "text file busy" errors when the destination binary is currently running.
-		tmpPath := destPath + ".tmp"
-		if err := copyFile(self, tmpPath); err != nil {
-			return fmt.Errorf("copying binary: %w", err)
-		}
-		if err := os.Rename(tmpPath, destPath); err != nil {
-			os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup
-			return fmt.Errorf("installing binary: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "  Binary installed to %s\n", destPath)
-	}
-
-	// Set capabilities.
-	setcap := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", destPath)
+	fmt.Fprintf(os.Stderr, "Setting capabilities on %s\n", binaryPath)
+	setcap := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", binaryPath)
 	setcap.Stdout = os.Stderr
 	setcap.Stderr = os.Stderr
 	if err := setcap.Run(); err != nil {
 		return fmt.Errorf("setcap failed (is libcap installed?): %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "  Capabilities set\n")
+
+	return nil
+}
+
+// resolveCurrentBinary returns the absolute path to the currently running
+// binary, resolving any symlinks.
+func resolveCurrentBinary() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("finding current binary: %w", err)
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return "", fmt.Errorf("resolving binary path: %w", err)
+	}
+	return self, nil
+}
+
+// resolveRealUser returns the non-root user who invoked sudo.
+// Falls back to the current user if SUDO_USER is not set.
+func resolveRealUser() (*user.User, error) {
+	username := os.Getenv("SUDO_USER")
+	if username == "" {
+		return user.Current()
+	}
+	return user.Lookup(username)
+}
+
+// installSystemdService writes the service file and updates the ExecStart path.
+// The service runs as the real user (from SUDO_USER), not root — capabilities
+// are granted via AmbientCapabilities.
+func installSystemdService(binaryPath string) error {
+	u, err := resolveRealUser()
+	if err != nil {
+		return fmt.Errorf("resolving user for systemd service: %w", err)
+	}
+
+	// Look up the user's primary group name.
+	grp, err := user.LookupGroupId(u.Gid)
+	if err != nil {
+		return fmt.Errorf("resolving group for uid %s: %w", u.Gid, err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Service will run as user=%s group=%s\n", u.Username, grp.Name)
+
+	serviceContent := fmt.Sprintf(`[Unit]
+Description=bamgate - WireGuard VPN tunnel over WebRTC
+Documentation=https://github.com/bamgate/bamgate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s up
+Restart=on-failure
+RestartSec=5
+
+# Run as the installing user, not root. Capabilities are granted below.
+User=%s
+Group=%s
+
+# Runtime directory for the control socket.
+RuntimeDirectory=bamgate
+RuntimeDirectoryMode=0755
+
+# Security hardening.
+# bamgate needs CAP_NET_ADMIN to create TUN devices and configure interfaces,
+# and CAP_NET_RAW for raw socket operations used by WireGuard.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+
+# Filesystem restrictions.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/bamgate
+PrivateTmp=yes
+
+# Network access (required).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+# System call filtering.
+SystemCallArchitectures=native
+LockPersonality=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
+`, binaryPath, u.Username, grp.Name)
+
+	fmt.Fprintf(os.Stderr, "Installing systemd service to %s\n", systemdServicePath)
+
+	if err := os.WriteFile(systemdServicePath, []byte(serviceContent), 0644); err != nil {
+		return fmt.Errorf("writing service file: %w", err)
+	}
+
+	// Reload systemd.
+	reload := exec.Command("systemctl", "daemon-reload")
+	reload.Stdout = os.Stderr
+	reload.Stderr = os.Stderr
+	if err := reload.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: systemctl daemon-reload failed: %v\n", err)
+	}
 
 	return nil
 }

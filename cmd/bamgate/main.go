@@ -50,7 +50,6 @@ func init() {
 	rootCmd.AddCommand(inviteCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(genkeyCmd)
-	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(versionCmd)
 
 	// Deprecated: init is superseded by setup.

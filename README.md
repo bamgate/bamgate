@@ -62,10 +62,21 @@ sudo bamgate setup
 
 ### Connect
 
+On Linux, `setup` grants network capabilities so you can run without sudo:
+
 ```bash
-sudo bamgate up        # foreground
-sudo bamgate up -d     # daemon mode (systemd)
+bamgate up             # foreground
+bamgate up -d          # daemon mode (systemd)
 ```
+
+On macOS, root is always required:
+
+```bash
+sudo bamgate up
+```
+
+**Note:** After `brew upgrade bamgate`, re-run `sudo bamgate setup` to restore
+network capabilities (Linux) or update the systemd service path.
 
 Check status:
 
