@@ -544,6 +544,10 @@ func resolveRealUser() (*user.User, error) {
 // installSystemdService writes the service file and updates the ExecStart path.
 // The service runs as the real user (from SUDO_USER), not root — capabilities
 // are granted via AmbientCapabilities.
+//
+// If the binary is under /home (e.g., Homebrew on Linux), it is copied to
+// /usr/local/bin/bamgate. Binaries under /home carry the SELinux label
+// user_home_t, which systemd services are not permitted to execute.
 func installSystemdService(binaryPath string) error {
 	u, err := resolveRealUser()
 	if err != nil {
@@ -554,6 +558,28 @@ func installSystemdService(binaryPath string) error {
 	grp, err := user.LookupGroupId(u.Gid)
 	if err != nil {
 		return fmt.Errorf("resolving group for uid %s: %w", u.Gid, err)
+	}
+
+	// If the binary lives under /home (common with Homebrew on Linux), copy
+	// it to a system path. SELinux labels files under /home as user_home_t,
+	// which prevents systemd services from executing them (status=203/EXEC).
+	// Copying to /usr/local/bin gives the binary the correct bin_t label.
+	const systemBinaryPath = "/usr/local/bin/bamgate"
+	serviceBinary := binaryPath
+	if strings.HasPrefix(binaryPath, "/home/") {
+		fmt.Fprintf(os.Stderr, "Binary is under /home — copying to %s for systemd compatibility\n", systemBinaryPath)
+		if err := copyBinary(binaryPath, systemBinaryPath, 0755); err != nil {
+			return fmt.Errorf("copying binary to %s: %w", systemBinaryPath, err)
+		}
+		// Set capabilities on the copy.
+		setcap := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", systemBinaryPath)
+		setcap.Stdout = os.Stderr
+		setcap.Stderr = os.Stderr
+		if err := setcap.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: setcap on %s failed: %v\n", systemBinaryPath, err)
+		}
+		serviceBinary = systemBinaryPath
+		fmt.Fprintf(os.Stderr, "  Copied and set capabilities on %s\n", systemBinaryPath)
 	}
 
 	fmt.Fprintf(os.Stderr, "Service will run as user=%s group=%s\n", u.Username, grp.Name)
@@ -607,7 +633,7 @@ RestrictSUIDSGID=yes
 
 [Install]
 WantedBy=multi-user.target
-`, binaryPath, u.Username, grp.Name)
+`, serviceBinary, u.Username, grp.Name)
 
 	fmt.Fprintf(os.Stderr, "Installing systemd service to %s\n", systemdServicePath)
 
@@ -624,6 +650,28 @@ WantedBy=multi-user.target
 	}
 
 	return nil
+}
+
+// copyBinary copies src to dst with the given permissions.
+// Used to copy the binary to a system path when the original is in a
+// location that systemd cannot execute from (e.g., /home with SELinux).
+func copyBinary(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("opening source: %w", err)
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("creating destination: %w", err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return fmt.Errorf("copying data: %w", err)
+	}
+	return out.Close()
 }
 
 // chownForUser sets file and parent directory ownership to the given user.
