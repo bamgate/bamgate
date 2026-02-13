@@ -30,6 +30,15 @@ graph LR
 brew install bamgate/tap/bamgate
 ```
 
+**Linux only:** Homebrew installs to a non-standard prefix that `sudo` can't find.
+Create a symlink so `sudo bamgate` works:
+
+```bash
+sudo ln -sf $(which bamgate) /usr/local/bin/bamgate
+```
+
+This only needs to be done once and survives `brew upgrade`.
+
 ### Download binary
 
 Pre-built binaries for Linux and macOS (amd64 + arm64) are available on the [releases page](https://github.com/bamgate/bamgate/releases).
