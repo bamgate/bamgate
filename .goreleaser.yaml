@@ -1,9 +1,9 @@
 version: 2
 
 builds:
-  - id: riftgate
-    main: ./cmd/riftgate
-    binary: riftgate
+  - id: bamgate
+    main: ./cmd/bamgate
+    binary: bamgate
     env:
       - CGO_ENABLED=0
     goos:
@@ -15,9 +15,9 @@ builds:
     ldflags:
       - -s -w -X main.version={{.Version}}
 
-  - id: riftgate-hub
-    main: ./cmd/riftgate-hub
-    binary: riftgate-hub
+  - id: bamgate-hub
+    main: ./cmd/bamgate-hub
+    binary: bamgate-hub
     env:
       - CGO_ENABLED=0
     goos:
