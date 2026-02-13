@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="bamgate.svg" alt="bamgate logo" width="200">
+</p>
+
 # bamgate
 
 A WireGuard VPN tunnel over WebRTC. Access your home network from anywhere without exposing your public IP or renting a VPS.
