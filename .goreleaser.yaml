@@ -44,3 +44,18 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^ci:"
+
+brews:
+  - ids:
+      - bamgate
+    repository:
+      owner: bamgate
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/bamgate/bamgate"
+    description: "WireGuard VPN tunnel over WebRTC"
+    license: "MIT"
+    install: |
+      bin.install "bamgate"
+    test: |
+      system "#{bin}/bamgate", "--version"
