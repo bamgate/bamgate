@@ -282,6 +282,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.5.1 | 2026-02-12 | Document symlink step for Linux Homebrew users |
 | v1.5.0 | 2026-02-12 | Remove install command, consolidate into setup with --force, project logo |
 | v1.4.0 | 2026-02-12 | Add MIT license, Homebrew tap support, transfer to bamgate org |
 | v1.3.0 | 2026-02-12 | Rename project from riftgate to bamgate (밤gate — "night gate") |
