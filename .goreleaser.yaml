@@ -30,9 +30,20 @@ builds:
       - -s -w
 
 archives:
-  - format: tar.gz
+  - id: bamgate
+    ids:
+      - bamgate
+    formats:
+      - tar.gz
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+  - id: bamgate-hub
+    ids:
+      - bamgate-hub
+    formats:
+      - tar.gz
+    name_template: >-
+      bamgate-hub_{{ .Version }}_{{ .Os }}_{{ .Arch }}
 
 checksum:
   name_template: checksums.txt
@@ -45,7 +56,7 @@ changelog:
       - "^test:"
       - "^ci:"
 
-brews:
+homebrew_casks:
   - ids:
       - bamgate
     repository:
@@ -54,8 +65,11 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/bamgate/bamgate"
     description: "WireGuard VPN tunnel over WebRTC"
-    license: "MIT"
-    install: |
-      bin.install "bamgate"
-    test: |
-      system "#{bin}/bamgate", "--version"
+    binaries:
+      - bamgate
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/bamgate"]
+          end
