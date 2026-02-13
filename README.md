@@ -18,23 +18,73 @@ graph LR
 - **Direct connection**: ICE/STUN punches through NAT when possible — low latency, no relay.
 - **Relayed connection**: When direct fails (symmetric NAT), traffic routes through a TURN relay on Cloudflare Durable Objects. The relay only sees opaque encrypted blobs.
 
-## Goals
+## Install
 
-- Zero exposed ports on the home network
-- No VPS required — runs entirely on Cloudflare's free tier
-- Single static binary for Linux, Android app via gomobile
-- WireGuard encryption end-to-end, with DTLS as an additional layer
+### Homebrew (macOS and Linux)
 
-## Status
+```bash
+brew install bamgate/tap/bamgate
+```
 
-Under active development. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+### Download binary
 
-## Building
+Pre-built binaries for Linux and macOS (amd64 + arm64) are available on the [releases page](https://github.com/bamgate/bamgate/releases).
+
+### Build from source
 
 ```bash
 go build -o bamgate ./cmd/bamgate
 ```
 
+## Quick start
+
+### First device (deploys the Cloudflare Worker)
+
+```bash
+sudo bamgate setup
+```
+
+This walks you through deploying the signaling server, generating WireGuard keys, and configuring the device. You'll need a [Cloudflare API token](https://dash.cloudflare.com/profile/api-tokens).
+
+### Additional devices
+
+On the first device, generate an invite code:
+
+```bash
+bamgate invite
+```
+
+On the new device, run setup with the invite code:
+
+```bash
+sudo bamgate setup
+```
+
+### Connect
+
+```bash
+sudo bamgate up        # foreground
+sudo bamgate up -d     # daemon mode (systemd)
+```
+
+Check status:
+
+```bash
+bamgate status
+```
+
+## Goals
+
+- Zero exposed ports on the home network
+- No VPS required — runs entirely on Cloudflare's free tier
+- Single static binary for Linux and macOS
+- WireGuard encryption end-to-end, with DTLS as an additional layer
+
+## Documentation
+
+- [Architecture](ARCHITECTURE.md) — full design document
+- [LAN testing guide](docs/testing-lan.md) — step-by-step local testing
+
 ## License
 
-TBD
+[MIT](LICENSE)
