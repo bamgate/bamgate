@@ -653,8 +653,8 @@ WantedBy=multi-user.target
 }
 
 // copyBinary copies src to dst with the given permissions.
-// Used to copy the binary to a system path when the original is in a
-// location that systemd cannot execute from (e.g., /home with SELinux).
+// Uses write-to-temp + rename for atomic replacement, which avoids
+// ETXTBSY ("text file busy") when the destination binary is running.
 func copyBinary(src, dst string, perm os.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -662,16 +662,39 @@ func copyBinary(src, dst string, perm os.FileMode) error {
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	// Write to a temp file in the same directory so rename is atomic.
+	dir := filepath.Dir(dst)
+	tmp, err := os.CreateTemp(dir, ".bamgate-copy-*")
 	if err != nil {
-		return fmt.Errorf("creating destination: %w", err)
+		return fmt.Errorf("creating temp file: %w", err)
 	}
-	defer out.Close()
+	tmpPath := tmp.Name()
 
-	if _, err := io.Copy(out, in); err != nil {
+	// Clean up the temp file on any error path.
+	defer func() {
+		if tmpPath != "" {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
 		return fmt.Errorf("copying data: %w", err)
 	}
-	return out.Close()
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return fmt.Errorf("setting permissions: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+
+	// Atomic rename replaces the destination even if it's running.
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return fmt.Errorf("renaming to destination: %w", err)
+	}
+	tmpPath = "" // Prevent deferred removal.
+	return nil
 }
 
 // chownForUser sets file and parent directory ownership to the given user.
