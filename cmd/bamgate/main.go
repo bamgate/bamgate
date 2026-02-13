@@ -1,4 +1,4 @@
-// Command riftgate is a WireGuard VPN tunnel over WebRTC. It allows a single
+// Command bamgate is a WireGuard VPN tunnel over WebRTC. It allows a single
 // user to access their home network from anywhere without exposing the home
 // network's public IP.
 package main
@@ -24,9 +24,9 @@ var (
 
 // rootCmd is the top-level command.
 var rootCmd = &cobra.Command{
-	Use:   "riftgate",
+	Use:   "bamgate",
 	Short: "WireGuard VPN tunnel over WebRTC",
-	Long: `riftgate lets you access your home network from anywhere without
+	Long: `bamgate lets you access your home network from anywhere without
 exposing the home network's public IP. It tunnels WireGuard traffic
 over WebRTC data channels, using Cloudflare Workers for signaling.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
@@ -41,7 +41,7 @@ over WebRTC data channels, using Cloudflare Workers for signaling.`,
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&globalConfigPath, "config", "", "path to config file (default: ~/.config/riftgate/config.toml)")
+	rootCmd.PersistentFlags().StringVar(&globalConfigPath, "config", "", "path to config file (default: ~/.config/bamgate/config.toml)")
 	rootCmd.PersistentFlags().BoolVarP(&globalVerbose, "verbose", "v", false, "enable debug logging")
 
 	rootCmd.AddCommand(setupCmd)
@@ -54,14 +54,14 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 
 	// Deprecated: init is superseded by setup.
-	initCmd.Deprecated = "use 'riftgate setup' instead"
+	initCmd.Deprecated = "use 'bamgate setup' instead"
 	rootCmd.AddCommand(initCmd)
 }
 
 // versionCmd prints the build version.
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print the riftgate version",
+	Short: "Print the bamgate version",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println(version)
 	},

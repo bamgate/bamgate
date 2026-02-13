@@ -75,7 +75,7 @@ func TestParseAndBuild_AllocateErrorResponse(t *testing.T) {
 	txID := [12]byte{0xAA, 0xBB, 0xCC, 0xDD}
 	built := NewBuilder(MethodAllocate, ClassErrorResponse, txID).
 		AddErrorCode(401, "Unauthorized").
-		AddRealm("riftgate").
+		AddRealm("bamgate").
 		AddNonce("test-nonce-123").
 		Build(nil)
 
@@ -97,8 +97,8 @@ func TestParseAndBuild_AllocateErrorResponse(t *testing.T) {
 		t.Errorf("error code: got %d, want 401", code)
 	}
 
-	if msg.GetRealm() != "riftgate" {
-		t.Errorf("realm: got %q, want %q", msg.GetRealm(), "riftgate")
+	if msg.GetRealm() != "bamgate" {
+		t.Errorf("realm: got %q, want %q", msg.GetRealm(), "bamgate")
 	}
 	if msg.GetNonce() != "test-nonce-123" {
 		t.Errorf("nonce: got %q, want %q", msg.GetNonce(), "test-nonce-123")
@@ -404,7 +404,7 @@ func TestAllocateDance(t *testing.T) {
 	// Server responds with 401.
 	resp1 := NewResponse(&msg1, ClassErrorResponse).
 		AddErrorCode(401, "Unauthorized").
-		AddRealm("riftgate").
+		AddRealm("bamgate").
 		AddNonce("test-nonce-abc").
 		Build(nil)
 
@@ -423,7 +423,7 @@ func TestAllocateDance(t *testing.T) {
 	if code != 401 {
 		t.Errorf("error code: got %d, want 401", code)
 	}
-	if respMsg1.GetRealm() != "riftgate" {
+	if respMsg1.GetRealm() != "bamgate" {
 		t.Errorf("realm: got %q", respMsg1.GetRealm())
 	}
 	if respMsg1.GetNonce() != "test-nonce-abc" {
@@ -431,12 +431,12 @@ func TestAllocateDance(t *testing.T) {
 	}
 
 	// Phase 2: Client sends authenticated Allocate.
-	authKey := DeriveAuthKey("user123", "riftgate", "password123")
+	authKey := DeriveAuthKey("user123", "bamgate", "password123")
 	txID2 := [12]byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C}
 	req2 := NewBuilder(MethodAllocate, ClassRequest, txID2).
 		AddRaw(AttrRequestedTransport, []byte{0x11, 0, 0, 0}).
 		AddUsername("user123").
-		AddRealm("riftgate").
+		AddRealm("bamgate").
 		AddNonce("test-nonce-abc").
 		Build(authKey)
 

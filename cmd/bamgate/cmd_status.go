@@ -8,20 +8,20 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuuji/riftgate/internal/control"
+	"github.com/kuuji/bamgate/internal/control"
 )
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show connection status",
-	Long:  `Query the running riftgate agent and display connected peers, connection type (direct/relayed), and tunnel addresses.`,
+	Long:  `Query the running bamgate agent and display connected peers, connection type (direct/relayed), and tunnel addresses.`,
 	RunE:  runStatus,
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
 	status, err := control.FetchStatus(control.ResolveSocketPath())
 	if err != nil {
-		return fmt.Errorf("is riftgate running? %w", err)
+		return fmt.Errorf("is bamgate running? %w", err)
 	}
 
 	// Print header.

@@ -1,5 +1,5 @@
 {
-  "name": "riftgate-worker",
+  "name": "bamgate-worker",
   "private": true,
   "scripts": {
     "build": "npm run build:wasm && npm run build:assets && npm run build:worker",

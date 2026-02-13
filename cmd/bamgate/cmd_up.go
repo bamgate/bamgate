@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuuji/riftgate/internal/agent"
-	"github.com/kuuji/riftgate/internal/config"
+	"github.com/kuuji/bamgate/internal/agent"
+	"github.com/kuuji/bamgate/internal/config"
 )
 
 var (
@@ -23,23 +23,23 @@ var (
 var upCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Connect to the network",
-	Long: `Start the riftgate agent: create a WireGuard tunnel, connect to the
+	Long: `Start the bamgate agent: create a WireGuard tunnel, connect to the
 signaling server, and bridge traffic over WebRTC data channels.
 
 Requires CAP_NET_ADMIN to create the TUN device and configure the
 network interface. You can grant this in one of three ways:
 
-  1. Run 'sudo riftgate install' once to set capabilities on the binary
-     (then 'riftgate up' works without sudo)
-  2. Run as a systemd service: sudo riftgate up -d
-  3. Run directly with sudo: sudo riftgate up
+  1. Run 'sudo bamgate install' once to set capabilities on the binary
+     (then 'bamgate up' works without sudo)
+  2. Run as a systemd service: sudo bamgate up -d
+  3. Run directly with sudo: sudo bamgate up
 
-Use -d/--daemon to start riftgate as a systemd service (enables on boot
-and starts immediately). Requires a prior 'sudo riftgate install --systemd'.`,
+Use -d/--daemon to start bamgate as a systemd service (enables on boot
+and starts immediately). Requires a prior 'sudo bamgate install --systemd'.`,
 	RunE: runUp,
 }
 
-const systemdServicePath = "/etc/systemd/system/riftgate.service"
+const systemdServicePath = "/etc/systemd/system/bamgate.service"
 
 func init() {
 	upCmd.Flags().BoolVarP(&upDaemon, "daemon", "d", false, "start as a systemd service (enable + start)")
@@ -71,12 +71,12 @@ func runUp(cmd *cobra.Command, args []string) error {
 
 	a := agent.New(cfg, globalLogger)
 
-	globalLogger.Info("starting riftgate", "config", resolvedConfigPath())
+	globalLogger.Info("starting bamgate", "config", resolvedConfigPath())
 
 	if err := a.Run(ctx); err != nil {
 		if ctx.Err() != nil {
 			// Context was cancelled (signal received) — clean shutdown.
-			globalLogger.Info("riftgate stopped")
+			globalLogger.Info("bamgate stopped")
 			return nil
 		}
 		return fmt.Errorf("agent error: %w", err)
@@ -85,27 +85,27 @@ func runUp(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runUpDaemon starts riftgate as a systemd service (enable + start).
+// runUpDaemon starts bamgate as a systemd service (enable + start).
 func runUpDaemon() error {
 	if runtime.GOOS != "linux" {
-		return fmt.Errorf("daemon mode (-d) requires systemd and is only supported on Linux; launchd support is not yet implemented\n\nRun 'sudo riftgate up' (without -d) to start in the foreground")
+		return fmt.Errorf("daemon mode (-d) requires systemd and is only supported on Linux; launchd support is not yet implemented\n\nRun 'sudo bamgate up' (without -d) to start in the foreground")
 	}
 	if _, err := os.Stat(systemdServicePath); os.IsNotExist(err) {
-		return fmt.Errorf("systemd service not installed; run 'sudo riftgate install --systemd' first")
+		return fmt.Errorf("systemd service not installed; run 'sudo bamgate install --systemd' first")
 	}
 
-	fmt.Fprintln(os.Stderr, "Enabling and starting riftgate service...")
+	fmt.Fprintln(os.Stderr, "Enabling and starting bamgate service...")
 
-	systemctl := exec.Command("sudo", "systemctl", "enable", "--now", "riftgate")
+	systemctl := exec.Command("sudo", "systemctl", "enable", "--now", "bamgate")
 	systemctl.Stdout = os.Stderr
 	systemctl.Stderr = os.Stderr
 	if err := systemctl.Run(); err != nil {
-		return fmt.Errorf("systemctl enable --now riftgate: %w", err)
+		return fmt.Errorf("systemctl enable --now bamgate: %w", err)
 	}
 
-	fmt.Fprintln(os.Stderr, "riftgate is running and enabled on boot.")
-	fmt.Fprintln(os.Stderr, "Use 'riftgate status' to check connection state.")
-	fmt.Fprintln(os.Stderr, "Use 'riftgate down' to stop and disable.")
+	fmt.Fprintln(os.Stderr, "bamgate is running and enabled on boot.")
+	fmt.Fprintln(os.Stderr, "Use 'bamgate status' to check connection state.")
+	fmt.Fprintln(os.Stderr, "Use 'bamgate down' to stop and disable.")
 
 	return nil
 }

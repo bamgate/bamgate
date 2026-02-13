@@ -15,18 +15,18 @@ func TestTURNServerURL(t *testing.T) {
 	}{
 		{
 			name:      "wss with explicit path",
-			serverURL: "wss://riftgate.example.workers.dev/connect?room=default",
-			want:      "turn:riftgate.example.workers.dev:443?transport=tcp",
+			serverURL: "wss://bamgate.example.workers.dev/connect?room=default",
+			want:      "turn:bamgate.example.workers.dev:443?transport=tcp",
 		},
 		{
 			name:      "wss bare",
-			serverURL: "wss://riftgate.example.workers.dev",
-			want:      "turn:riftgate.example.workers.dev:443?transport=tcp",
+			serverURL: "wss://bamgate.example.workers.dev",
+			want:      "turn:bamgate.example.workers.dev:443?transport=tcp",
 		},
 		{
 			name:      "https",
-			serverURL: "https://riftgate.example.workers.dev/connect",
-			want:      "turn:riftgate.example.workers.dev:443?transport=tcp",
+			serverURL: "https://bamgate.example.workers.dev/connect",
+			want:      "turn:bamgate.example.workers.dev:443?transport=tcp",
 		},
 		{
 			name:      "ws localhost",
@@ -64,13 +64,13 @@ func TestTURNWebSocketURL(t *testing.T) {
 	}{
 		{
 			name:      "wss with path",
-			serverURL: "wss://riftgate.example.workers.dev/connect?room=default",
-			want:      "wss://riftgate.example.workers.dev/turn",
+			serverURL: "wss://bamgate.example.workers.dev/connect?room=default",
+			want:      "wss://bamgate.example.workers.dev/turn",
 		},
 		{
 			name:      "https to wss",
-			serverURL: "https://riftgate.example.workers.dev/connect",
-			want:      "wss://riftgate.example.workers.dev/turn",
+			serverURL: "https://bamgate.example.workers.dev/connect",
+			want:      "wss://bamgate.example.workers.dev/turn",
 		},
 		{
 			name:      "http to ws",

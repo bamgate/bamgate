@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kuuji/riftgate/pkg/protocol"
+	"github.com/kuuji/bamgate/pkg/protocol"
 )
 
 // startTestHub starts an httptest.Server running the signaling Hub and returns

@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuuji/riftgate/internal/config"
+	"github.com/kuuji/bamgate/internal/config"
 )
 
 var genkeyCmd = &cobra.Command{
@@ -16,8 +16,8 @@ The private key is printed to stdout as base64. The corresponding
 public key is printed to stderr.
 
 Example:
-  riftgate genkey                    # print private key
-  riftgate genkey 2>/dev/null        # private key only (pipe-friendly)`,
+  bamgate genkey                    # print private key
+  bamgate genkey 2>/dev/null        # private key only (pipe-friendly)`,
 	RunE: runGenkey,
 }
 

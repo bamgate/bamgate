@@ -9,7 +9,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/kuuji/riftgate/pkg/protocol"
+	"github.com/kuuji/bamgate/pkg/protocol"
 )
 
 // Hub is a signaling server that relays WebRTC signaling messages between
@@ -17,7 +17,7 @@ import (
 // and forwards SDP offers/answers and ICE candidates between peers.
 //
 // Hub implements http.Handler and can be used with any HTTP server.
-// It is used for local/LAN testing (via cmd/riftgate-hub) and will be
+// It is used for local/LAN testing (via cmd/bamgate-hub) and will be
 // replaced by the Cloudflare Worker in production.
 type Hub struct {
 	mu     sync.Mutex

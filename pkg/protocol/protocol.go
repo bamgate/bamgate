@@ -1,5 +1,5 @@
 // Package protocol defines the signaling protocol message types used by
-// riftgate clients and the Cloudflare Worker signaling server.
+// bamgate clients and the Cloudflare Worker signaling server.
 //
 // All messages are JSON-encoded with a "type" discriminator field. This
 // package is intentionally free of external dependencies so it can be

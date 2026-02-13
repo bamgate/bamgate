@@ -13,7 +13,7 @@ const (
 )
 
 // DefaultTUNName is defined per-platform:
-//   - Linux: "riftgate0" (in tun_linux.go)
+//   - Linux: "bamgate0" (in tun_linux.go)
 //   - macOS: "utun" (in tun_darwin.go) — kernel auto-assigns next available utun
 
 // CreateTUN creates a kernel TUN device with the given name and MTU.

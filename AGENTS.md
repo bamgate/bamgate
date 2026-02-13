@@ -1,8 +1,8 @@
-# AGENTS.md — riftgate
+# AGENTS.md — bamgate
 
 ## Project Overview
 
-riftgate (binary: `riftgate`) is a WireGuard VPN tunnel over WebRTC. It lets a single
+bamgate (binary: `bamgate`) is a WireGuard VPN tunnel over WebRTC. It lets a single
 user access their home network from anywhere without exposing the home network's public
 IP. The relay/signaling infrastructure runs on Cloudflare Workers (free tier).
 
@@ -43,7 +43,7 @@ When creating a release (commit + tag + `gh release create`):
 
 ```bash
 # Build
-go build -o riftgate ./cmd/riftgate
+go build -o bamgate ./cmd/bamgate
 
 # Run all tests
 go test ./...
@@ -102,7 +102,7 @@ npx wrangler deploy
 - Group imports in three blocks separated by blank lines:
   1. Standard library
   2. Third-party packages
-  3. Internal packages (`github.com/...riftgate/...`)
+  3. Internal packages (`github.com/...bamgate/...`)
 - Use `goimports` to manage import ordering automatically.
 
 ### Naming
@@ -157,8 +157,8 @@ npx wrangler deploy
 ## Project Structure
 
 ```
-cmd/riftgate/          # CLI entry point (main package)
-cmd/riftgate-hub/      # Standalone signaling hub for local/LAN testing
+cmd/bamgate/          # CLI entry point (main package)
+cmd/bamgate-hub/      # Standalone signaling hub for local/LAN testing
 internal/
   config/              # TOML config management, key generation
   signaling/           # WebSocket client to CF Worker

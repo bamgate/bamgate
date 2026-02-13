@@ -19,19 +19,19 @@ var (
 
 var installCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install riftgate with required capabilities",
-	Long: `Copy the riftgate binary to a system path and set Linux capabilities
+	Short: "Install bamgate with required capabilities",
+	Long: `Copy the bamgate binary to a system path and set Linux capabilities
 so it can create TUN devices without running as root.
 
 This command must be run with sudo:
-  sudo riftgate install
+  sudo bamgate install
 
 What it does:
-  1. Copies the binary to /usr/local/bin/riftgate (or --prefix)
+  1. Copies the binary to /usr/local/bin/bamgate (or --prefix)
   2. Sets CAP_NET_ADMIN and CAP_NET_RAW capabilities on the binary
   3. Optionally installs the systemd service file (--systemd)
 
-After installation, any user can run 'riftgate up' without sudo.`,
+After installation, any user can run 'bamgate up' without sudo.`,
 	RunE: runInstall,
 }
 
@@ -46,7 +46,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 
 	if os.Getuid() != 0 {
-		return fmt.Errorf("install must be run as root (try: sudo riftgate install)")
+		return fmt.Errorf("install must be run as root (try: sudo bamgate install)")
 	}
 
 	// Resolve the current binary path.
@@ -60,7 +60,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 
 	destDir := filepath.Join(installPrefix, "bin")
-	destPath := filepath.Join(destDir, "riftgate")
+	destPath := filepath.Join(destDir, "bamgate")
 
 	// Create destination directory if needed.
 	if err := os.MkdirAll(destDir, 0755); err != nil {
@@ -85,7 +85,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 
 	if runtime.GOOS == "linux" {
-		// Set Linux capabilities so riftgate can run without root.
+		// Set Linux capabilities so bamgate can run without root.
 		fmt.Fprintf(os.Stderr, "Setting capabilities on %s\n", destPath)
 		setcap := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", destPath)
 		setcap.Stdout = os.Stderr
@@ -110,12 +110,12 @@ func runInstall(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "\nInstallation complete.\n")
 	if runtime.GOOS == "linux" {
-		fmt.Fprintf(os.Stderr, "You can now run 'riftgate up' without sudo.\n")
+		fmt.Fprintf(os.Stderr, "You can now run 'bamgate up' without sudo.\n")
 		if installSystemd {
-			fmt.Fprintf(os.Stderr, "To enable the service: sudo systemctl enable --now riftgate\n")
+			fmt.Fprintf(os.Stderr, "To enable the service: sudo systemctl enable --now bamgate\n")
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "Run 'sudo riftgate up' to connect.\n")
+		fmt.Fprintf(os.Stderr, "Run 'sudo bamgate up' to connect.\n")
 	}
 
 	return nil
@@ -134,7 +134,7 @@ func installBinary(prefix string) error {
 	}
 
 	destDir := filepath.Join(prefix, "bin")
-	destPath := filepath.Join(destDir, "riftgate")
+	destPath := filepath.Join(destDir, "bamgate")
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("creating %s: %w", destDir, err)
@@ -206,8 +206,8 @@ func installSystemdService(binaryPath string) error {
 	fmt.Fprintf(os.Stderr, "Service will run as user=%s group=%s\n", u.Username, grp.Name)
 
 	serviceContent := fmt.Sprintf(`[Unit]
-Description=riftgate - WireGuard VPN tunnel over WebRTC
-Documentation=https://github.com/kuuji/riftgate
+Description=bamgate - WireGuard VPN tunnel over WebRTC
+Documentation=https://github.com/kuuji/bamgate
 After=network-online.target
 Wants=network-online.target
 
@@ -222,11 +222,11 @@ User=%s
 Group=%s
 
 # Runtime directory for the control socket.
-RuntimeDirectory=riftgate
+RuntimeDirectory=bamgate
 RuntimeDirectoryMode=0755
 
 # Security hardening.
-# riftgate needs CAP_NET_ADMIN to create TUN devices and configure interfaces,
+# bamgate needs CAP_NET_ADMIN to create TUN devices and configure interfaces,
 # and CAP_NET_RAW for raw socket operations used by WireGuard.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
@@ -235,7 +235,7 @@ NoNewPrivileges=yes
 # Filesystem restrictions.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/run/riftgate
+ReadWritePaths=/run/bamgate
 PrivateTmp=yes
 
 # Network access (required).
@@ -256,7 +256,7 @@ RestrictSUIDSGID=yes
 WantedBy=multi-user.target
 `, binaryPath, u.Username, grp.Name)
 
-	servicePath := "/etc/systemd/system/riftgate.service"
+	servicePath := "/etc/systemd/system/bamgate.service"
 	fmt.Fprintf(os.Stderr, "Installing systemd service to %s\n", servicePath)
 
 	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {

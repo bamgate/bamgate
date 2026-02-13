@@ -2,9 +2,9 @@ package deploy
 
 import "embed"
 
-// assets holds the pre-built worker files that are embedded into the riftgate
+// assets holds the pre-built worker files that are embedded into the bamgate
 // binary at compile time. These are uploaded to Cloudflare Workers during
-// `riftgate setup`.
+// `bamgate setup`.
 //
 //go:embed assets/worker.mjs assets/app.wasm assets/wasm_exec.js
 var assets embed.FS

@@ -6,7 +6,7 @@ import (
 
 const (
 	// DataChannelLabel is the label used for the WireGuard tunnel data channel.
-	DataChannelLabel = "riftgate"
+	DataChannelLabel = "bamgate"
 )
 
 // dataChannelConfig returns the pion DataChannelInit configured for

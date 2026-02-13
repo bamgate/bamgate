@@ -1,4 +1,4 @@
-module github.com/kuuji/riftgate
+module github.com/kuuji/bamgate
 
 go 1.25.5
 

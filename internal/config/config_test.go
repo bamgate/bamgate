@@ -33,7 +33,7 @@ func TestSaveAndLoadConfig_roundTrip(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "riftgate", "config.toml")
+	path := filepath.Join(dir, "bamgate", "config.toml")
 
 	priv, err := GeneratePrivateKey()
 	if err != nil {
@@ -43,7 +43,7 @@ func TestSaveAndLoadConfig_roundTrip(t *testing.T) {
 	original := &Config{
 		Network: NetworkConfig{
 			Name:       "test-network",
-			ServerURL:  "https://riftgate-test.workers.dev",
+			ServerURL:  "https://bamgate-test.workers.dev",
 			AuthToken:  "secret-token-123",
 			TURNSecret: "turn-secret-456",
 		},
@@ -233,7 +233,7 @@ func TestDefaultConfigPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultConfigPath() error: %v", err)
 	}
-	want := "/tmp/test-xdg/riftgate/config.toml"
+	want := "/tmp/test-xdg/bamgate/config.toml"
 	if path != want {
 		t.Errorf("DefaultConfigPath() = %q, want %q", path, want)
 	}
@@ -251,7 +251,7 @@ func TestDefaultConfigPath_fallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UserHomeDir() error: %v", err)
 	}
-	want := filepath.Join(home, ".config", "riftgate", "config.toml")
+	want := filepath.Join(home, ".config", "bamgate", "config.toml")
 	if path != want {
 		t.Errorf("DefaultConfigPath() = %q, want %q", path, want)
 	}

@@ -1,7 +1,7 @@
 // Package bridge implements a custom conn.Bind that transports WireGuard's
 // encrypted packets over WebRTC data channels instead of UDP.
 //
-// This is the critical glue in riftgate's architecture:
+// This is the critical glue in bamgate's architecture:
 //
 //	App → kernel TUN → wireguard-go encrypts → Bind.Send → WebRTC data channel
 //	WebRTC data channel → Bind.ReceiveFunc → wireguard-go decrypts → kernel TUN → App

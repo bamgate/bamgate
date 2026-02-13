@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuuji/riftgate/internal/config"
+	"github.com/kuuji/bamgate/internal/config"
 )
 
 var initCmd = &cobra.Command{
@@ -43,7 +43,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	cfg.Device.Name = promptString(scanner, "Device name", hostname)
 
 	// Server URL.
-	rawURL := promptString(scanner, "Signaling server URL (e.g. wss://riftgate.example.workers.dev/connect)", "")
+	rawURL := promptString(scanner, "Signaling server URL (e.g. wss://bamgate.example.workers.dev/connect)", "")
 	if rawURL == "" {
 		return fmt.Errorf("server URL is required")
 	}
@@ -81,7 +81,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "\nConfig written to: %s\n", cfgPath)
 	fmt.Fprintf(os.Stderr, "Public key:        %s\n", pubKey.String())
 	fmt.Fprintf(os.Stderr, "\nShare the public key with your other devices.\n")
-	fmt.Fprintf(os.Stderr, "Run 'sudo riftgate up' to connect.\n")
+	fmt.Fprintf(os.Stderr, "Run 'sudo bamgate up' to connect.\n")
 
 	return nil
 }

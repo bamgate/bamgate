@@ -1,6 +1,6 @@
 // Package control provides a Unix socket HTTP server for querying the
-// running riftgate agent. The agent starts the server as part of its
-// lifecycle, and the "riftgate status" CLI command connects to it.
+// running bamgate agent. The agent starts the server as part of its
+// lifecycle, and the "bamgate status" CLI command connects to it.
 package control
 
 import (
@@ -19,34 +19,34 @@ import (
 // ResolveSocketPath returns the best socket path for the current environment.
 //
 // On Linux, it checks in order:
-//  1. /run/riftgate/ — if writable (systemd RuntimeDirectory= or root)
-//  2. $XDG_RUNTIME_DIR/riftgate/ — user-writable runtime directory
-//  3. /tmp/riftgate/ — fallback
+//  1. /run/bamgate/ — if writable (systemd RuntimeDirectory= or root)
+//  2. $XDG_RUNTIME_DIR/bamgate/ — user-writable runtime directory
+//  3. /tmp/bamgate/ — fallback
 //
 // On macOS, it checks in order:
-//  1. /var/run/riftgate/ — system runtime directory (requires root)
-//  2. /tmp/riftgate/ — fallback
+//  1. /var/run/bamgate/ — system runtime directory (requires root)
+//  2. /tmp/bamgate/ — fallback
 func ResolveSocketPath() string {
 	if runtime.GOOS == "darwin" {
 		// macOS: /var/run is the standard location for runtime data.
-		if info, err := os.Stat("/var/run/riftgate"); err == nil && info.IsDir() {
-			return "/var/run/riftgate/control.sock"
+		if info, err := os.Stat("/var/run/bamgate"); err == nil && info.IsDir() {
+			return "/var/run/bamgate/control.sock"
 		}
-		return "/tmp/riftgate/control.sock"
+		return "/tmp/bamgate/control.sock"
 	}
 
 	// Linux: check if the systemd-managed directory exists and is writable.
-	if info, err := os.Stat("/run/riftgate"); err == nil && info.IsDir() {
-		return "/run/riftgate/control.sock"
+	if info, err := os.Stat("/run/bamgate"); err == nil && info.IsDir() {
+		return "/run/bamgate/control.sock"
 	}
 
 	// Fall back to XDG_RUNTIME_DIR.
 	if xdgDir := os.Getenv("XDG_RUNTIME_DIR"); xdgDir != "" {
-		return filepath.Join(xdgDir, "riftgate", "control.sock")
+		return filepath.Join(xdgDir, "bamgate", "control.sock")
 	}
 
 	// Last resort.
-	return "/tmp/riftgate/control.sock"
+	return "/tmp/bamgate/control.sock"
 }
 
 // Status represents the overall agent status returned by the /status endpoint.
@@ -163,7 +163,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // FetchStatus connects to a running control server and returns the status.
-// This is used by the "riftgate status" CLI command.
+// This is used by the "bamgate status" CLI command.
 func FetchStatus(socketPath string) (*Status, error) {
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -174,7 +174,7 @@ func FetchStatus(socketPath string) (*Status, error) {
 		Timeout: 5 * time.Second,
 	}
 
-	resp, err := client.Get("http://riftgate/status")
+	resp, err := client.Get("http://bamgate/status")
 	if err != nil {
 		return nil, fmt.Errorf("connecting to control socket: %w", err)
 	}

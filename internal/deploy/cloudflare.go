@@ -1,4 +1,4 @@
-// Package deploy implements deployment of the riftgate signaling worker to
+// Package deploy implements deployment of the bamgate signaling worker to
 // Cloudflare Workers via the Cloudflare REST API (v4).
 package deploy
 
@@ -17,7 +17,7 @@ import (
 const cfAPIBase = "https://api.cloudflare.com/client/v4"
 
 // Client communicates with the Cloudflare REST API to deploy and manage
-// riftgate signaling workers.
+// bamgate signaling workers.
 type Client struct {
 	apiToken   string
 	httpClient *http.Client
@@ -137,7 +137,7 @@ type DeployWorkerInput struct {
 	ScriptName string
 	Modules    []WorkerModule
 	MainModule string // Must match one of the module names.
-	AuthToken  string // The riftgate auth token to set as a plain text binding.
+	AuthToken  string // The bamgate auth token to set as a plain text binding.
 	TURNSecret string // Shared secret for TURN credential generation/validation.
 
 	// IncludeMigration controls whether the DO migration is included.

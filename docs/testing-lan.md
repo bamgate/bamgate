@@ -4,8 +4,8 @@ Test a full WireGuard tunnel between two Linux machines using a local signaling 
 
 ## Prerequisites
 
-- `riftgate` binary on both machines
-- `riftgate-hub` binary on one machine (the signaling server)
+- `bamgate` binary on both machines
+- `bamgate-hub` binary on one machine (the signaling server)
 - Both machines on the same LAN
 - `sudo` access on both (TUN device creation requires `CAP_NET_ADMIN`)
 - `wg` tools installed for key generation (package: `wireguard-tools`)
@@ -24,7 +24,7 @@ exchanged automatically via signaling.
 
 ## Step 2: Create config files
 
-On **Machine A** (home-server), create `~/.config/riftgate/config.toml`:
+On **Machine A** (home-server), create `~/.config/bamgate/config.toml`:
 
 ```toml
 [network]
@@ -36,7 +36,7 @@ private_key = "<MACHINE_A_PRIVATE_KEY>"
 address = "10.0.0.1/24"
 ```
 
-On **Machine B** (laptop), create `~/.config/riftgate/config.toml`:
+On **Machine B** (laptop), create `~/.config/bamgate/config.toml`:
 
 ```toml
 [network]
@@ -59,24 +59,24 @@ roles via lexicographic ordering.
 On either machine (or a third):
 
 ```bash
-./riftgate-hub -addr :8080
+./bamgate-hub -addr :8080
 ```
 
 This runs the WebSocket signaling relay that peers connect to for SDP and ICE
 candidate exchange. It does not need root.
 
-## Step 4: Start riftgate on both machines
+## Step 4: Start bamgate on both machines
 
 On **Machine A**:
 
 ```bash
-sudo ./riftgate -v
+sudo ./bamgate -v
 ```
 
 On **Machine B**:
 
 ```bash
-sudo ./riftgate -v
+sudo ./bamgate -v
 ```
 
 The `-v` flag enables debug logging so you can watch signaling, ICE negotiation,
@@ -87,7 +87,7 @@ and data channel setup in real time.
 Check the TUN interface is up on both machines:
 
 ```bash
-ip addr show riftgate0
+ip addr show bamgate0
 ```
 
 Test connectivity:
@@ -107,7 +107,7 @@ ssh user@10.0.0.2
 
 With `-v`, you should see this sequence on each peer:
 
-1. **TUN device created** — `riftgate0` interface created
+1. **TUN device created** — `bamgate0` interface created
 2. **TUN interface configured** — IP address assigned
 3. **agent started** — connected to signaling hub
 4. **received peer list** / **discovered peer** — peer discovery via signaling
@@ -116,12 +116,12 @@ With `-v`, you should see this sequence on each peer:
 
 ## Teardown
 
-Press Ctrl+C on each `riftgate` process. It handles SIGINT/SIGTERM gracefully and
+Press Ctrl+C on each `bamgate` process. It handles SIGINT/SIGTERM gracefully and
 tears down the TUN interface, WireGuard device, and WebRTC connections.
 
 ## Troubleshooting
 
-- **Config file not found**: Ensure `~/.config/riftgate/config.toml` exists with
+- **Config file not found**: Ensure `~/.config/bamgate/config.toml` exists with
   correct permissions, or pass `--config /path/to/config.toml` explicitly.
 - **TUN creation fails**: Make sure you're running with `sudo`. The `ip` command
   must also be available (usually in the `iproute2` package).
@@ -131,6 +131,6 @@ tears down the TUN interface, WireGuard device, and WebRTC connections.
 - **ICE connection fails**: On a LAN, peers should connect directly via host
   candidates. If firewalls block UDP between the machines, ICE will fail (there's
   no TURN relay yet — that's Phase 4).
-- **Ping doesn't work after "data channel open"**: Check that `riftgate0` has the
-  expected IP on both sides with `ip addr show riftgate0`. Check WireGuard status
+- **Ping doesn't work after "data channel open"**: Check that `bamgate0` has the
+  expected IP on both sides with `ip addr show bamgate0`. Check WireGuard status
   with `sudo wg show` if `wg` tools are installed.

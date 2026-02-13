@@ -19,17 +19,17 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/kuuji/riftgate/internal/bridge"
-	"github.com/kuuji/riftgate/internal/config"
-	"github.com/kuuji/riftgate/internal/control"
-	"github.com/kuuji/riftgate/internal/signaling"
-	"github.com/kuuji/riftgate/internal/tunnel"
-	"github.com/kuuji/riftgate/internal/turn"
-	rtcpkg "github.com/kuuji/riftgate/internal/webrtc"
-	"github.com/kuuji/riftgate/pkg/protocol"
+	"github.com/kuuji/bamgate/internal/bridge"
+	"github.com/kuuji/bamgate/internal/config"
+	"github.com/kuuji/bamgate/internal/control"
+	"github.com/kuuji/bamgate/internal/signaling"
+	"github.com/kuuji/bamgate/internal/tunnel"
+	"github.com/kuuji/bamgate/internal/turn"
+	rtcpkg "github.com/kuuji/bamgate/internal/webrtc"
+	"github.com/kuuji/bamgate/pkg/protocol"
 )
 
-// Agent orchestrates the riftgate VPN tunnel. It connects to the signaling
+// Agent orchestrates the bamgate VPN tunnel. It connects to the signaling
 // server, establishes WebRTC connections with peers, and bridges WireGuard
 // traffic over data channels.
 type Agent struct {
@@ -38,7 +38,7 @@ type Agent struct {
 
 	bind      *bridge.Bind
 	wgDevice  *tunnel.Device
-	tunName   string // kernel interface name (e.g. "riftgate0")
+	tunName   string // kernel interface name (e.g. "bamgate0")
 	sigClient *signaling.Client
 	ctrlSrv   *control.Server
 
@@ -136,7 +136,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("configuring TUN interface: %w", err)
 	}
 
-	// 5. Start control server for "riftgate status".
+	// 5. Start control server for "bamgate status".
 	a.startedAt = time.Now()
 	a.ctrlSrv = control.NewServer(control.ResolveSocketPath(), a.Status, a.log)
 	if err := a.ctrlSrv.Start(); err != nil {
@@ -604,7 +604,7 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 	// Add kernel routes for the peer's advertised subnets so the kernel
 	// directs matching traffic into the TUN interface. Without these routes,
 	// WireGuard has the AllowedIPs but the kernel doesn't know to send
-	// packets to riftgate0.
+	// packets to bamgate0.
 	if a.cfg.Device.AcceptRoutes {
 		for _, route := range ps.routes {
 			if !isValidRoute(route) {

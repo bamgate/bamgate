@@ -1,4 +1,4 @@
-name = "riftgate"
+name = "bamgate"
 main = "./build/worker.mjs"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]

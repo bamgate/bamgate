@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kuuji/riftgate/internal/config"
+	"github.com/kuuji/bamgate/internal/config"
 )
 
 func TestHexKey(t *testing.T) {

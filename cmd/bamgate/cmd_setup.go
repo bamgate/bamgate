@@ -20,14 +20,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/kuuji/riftgate/internal/config"
-	"github.com/kuuji/riftgate/internal/deploy"
+	"github.com/kuuji/bamgate/internal/config"
+	"github.com/kuuji/bamgate/internal/deploy"
 )
 
 var setupCmd = &cobra.Command{
 	Use:   "setup",
-	Short: "Set up riftgate: deploy signaling server and configure this device",
-	Long: `Interactive setup wizard that handles everything needed to get riftgate running:
+	Short: "Set up bamgate: deploy signaling server and configure this device",
+	Long: `Interactive setup wizard that handles everything needed to get bamgate running:
 
   1. Deploy the signaling worker to Cloudflare (or detect existing deployment)
   2. Configure this device (name, WireGuard keys, tunnel address)
@@ -38,7 +38,7 @@ If you have an invite code from another device, setup will use it to
 retrieve the server configuration automatically — no Cloudflare account needed.
 
 This command should be run with sudo:
-  sudo riftgate setup`,
+  sudo bamgate setup`,
 	RunE: runSetup,
 }
 
@@ -48,7 +48,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 
 	if os.Getuid() != 0 {
-		return fmt.Errorf("setup must be run as root (try: sudo riftgate setup)")
+		return fmt.Errorf("setup must be run as root (try: sudo bamgate setup)")
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -71,7 +71,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "\nriftgate setup\n")
+	fmt.Fprintf(os.Stderr, "\nbamgate setup\n")
 	fmt.Fprintf(os.Stderr, "%s\n\n", strings.Repeat("=", 14))
 
 	// Ask whether the user has an invite code.
@@ -127,7 +127,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 
 		// Optionally install systemd service.
 		if promptYesNo(scanner, "Install systemd service?", true) {
-			destPath := "/usr/local/bin/riftgate"
+			destPath := "/usr/local/bin/bamgate"
 			if err := installSystemdService(destPath); err != nil {
 				return fmt.Errorf("installing systemd service: %w", err)
 			}
@@ -136,19 +136,19 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		if err := installBinary("/usr/local"); err != nil {
 			return fmt.Errorf("installing binary: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "  Note: macOS requires sudo to run riftgate (no setcap equivalent).\n")
+		fmt.Fprintf(os.Stderr, "  Note: macOS requires sudo to run bamgate (no setcap equivalent).\n")
 	}
 
 	// --- Done ---
 	fmt.Fprintf(os.Stderr, "\nSetup complete!")
 	if runtime.GOOS == "darwin" {
-		fmt.Fprintf(os.Stderr, " Run 'sudo riftgate up' to connect.\n")
+		fmt.Fprintf(os.Stderr, " Run 'sudo bamgate up' to connect.\n")
 	} else {
-		fmt.Fprintf(os.Stderr, " Run 'riftgate up' to connect.\n")
+		fmt.Fprintf(os.Stderr, " Run 'bamgate up' to connect.\n")
 	}
 	fmt.Fprintf(os.Stderr, "  Public key: %s\n", pubKey.String())
 	fmt.Fprintf(os.Stderr, "\nTo add another device to this network, run on a connected device:\n")
-	fmt.Fprintf(os.Stderr, "  riftgate invite\n")
+	fmt.Fprintf(os.Stderr, "  bamgate invite\n")
 
 	return nil
 }
@@ -158,7 +158,7 @@ func setupWithInvite(ctx context.Context, scanner *bufio.Scanner) (*config.Confi
 	fmt.Fprintf(os.Stderr, "\nInvite Setup\n")
 	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 12))
 
-	workerName := promptString(scanner, "Worker name", "riftgate")
+	workerName := promptString(scanner, "Worker name", "bamgate")
 	subdomain := promptString(scanner, "Cloudflare subdomain", "")
 	if subdomain == "" {
 		return nil, fmt.Errorf("subdomain is required")
@@ -276,7 +276,7 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 	}
 
 	// Check if worker already exists.
-	workerName := "riftgate"
+	workerName := "bamgate"
 	exists, err := cfClient.WorkerExists(ctx, account.ID, workerName)
 	if err != nil {
 		return nil, err
@@ -341,9 +341,9 @@ func setupWithCloudflare(ctx context.Context, scanner *bufio.Scanner) (*config.C
 	// --- First-time deploy ---
 	fmt.Fprintf(os.Stderr, "\nSignaling Server\n")
 	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 16))
-	fmt.Fprintf(os.Stderr, "No existing riftgate worker found. Deploying...\n")
+	fmt.Fprintf(os.Stderr, "No existing bamgate worker found. Deploying...\n")
 
-	workerName = promptString(scanner, "Worker name", "riftgate")
+	workerName = promptString(scanner, "Worker name", "bamgate")
 
 	// Generate auth token and TURN secret.
 	authToken, err = generateAuthToken()
@@ -458,7 +458,7 @@ func installBinaryWithCaps(prefix string) error {
 	}
 
 	destDir := filepath.Join(prefix, "bin")
-	destPath := filepath.Join(destDir, "riftgate")
+	destPath := filepath.Join(destDir, "bamgate")
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("creating %s: %w", destDir, err)
@@ -508,7 +508,7 @@ func chownForUser(path string, u *user.User) {
 	// Chown the file itself.
 	_ = os.Chown(path, uid, gid)
 
-	// Walk up through riftgate config directory.
+	// Walk up through bamgate config directory.
 	dir := filepath.Dir(path)
 	_ = os.Chown(dir, uid, gid)
 }

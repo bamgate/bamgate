@@ -18,10 +18,10 @@ var inviteCmd = &cobra.Command{
 	Use:   "invite",
 	Short: "Generate an invite code for a new device",
 	Long: `Generate a short-lived invite code that another device can use to join
-this riftgate network. The invite code is valid for 10 minutes and can
+this bamgate network. The invite code is valid for 10 minutes and can
 be used once.
 
-The new device runs 'sudo riftgate setup' and enters the invite code
+The new device runs 'sudo bamgate setup' and enters the invite code
 when prompted. No Cloudflare account is needed on the new device.
 
 This command reads the server URL and auth token from your config file.`,
@@ -35,10 +35,10 @@ func runInvite(cmd *cobra.Command, args []string) error {
 	}
 
 	if cfg.Network.ServerURL == "" {
-		return fmt.Errorf("no server URL configured — run 'sudo riftgate setup' first")
+		return fmt.Errorf("no server URL configured — run 'sudo bamgate setup' first")
 	}
 	if cfg.Network.AuthToken == "" {
-		return fmt.Errorf("no auth token configured — run 'sudo riftgate setup' first")
+		return fmt.Errorf("no auth token configured — run 'sudo bamgate setup' first")
 	}
 
 	// Derive the HTTPS base URL from the WSS signaling URL.
@@ -91,7 +91,7 @@ func runInvite(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "  Expires in:  %d minutes\n", result.ExpiresIn/60)
 	fmt.Fprintf(os.Stderr, "\nOn the new device, run:\n")
-	fmt.Fprintf(os.Stderr, "  sudo riftgate setup\n\n")
+	fmt.Fprintf(os.Stderr, "  sudo bamgate setup\n\n")
 	fmt.Fprintf(os.Stderr, "When prompted, enter the invite code")
 	if workerName != "" && subdomain != "" {
 		fmt.Fprintf(os.Stderr, ", worker name, and subdomain above.\n")
@@ -125,7 +125,7 @@ func wsToHTTPBaseURL(wsURL string) (string, error) {
 }
 
 // parseWorkersDevURL extracts the worker name and subdomain from a workers.dev URL.
-// e.g. "wss://riftgate.ag94441.workers.dev/connect" → ("riftgate", "ag94441", nil)
+// e.g. "wss://bamgate.ag94441.workers.dev/connect" → ("bamgate", "ag94441", nil)
 func parseWorkersDevURL(rawURL string) (workerName, subdomain string, err error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {

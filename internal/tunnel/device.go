@@ -8,7 +8,7 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 
-	"github.com/kuuji/riftgate/internal/config"
+	"github.com/kuuji/bamgate/internal/config"
 )
 
 // Device wraps a wireguard-go device and its associated TUN interface.
@@ -22,7 +22,7 @@ type Device struct {
 // NewDevice creates a new WireGuard device with the given TUN device and conn.Bind.
 // It configures the device with the provided private key and brings it up.
 //
-// The bind parameter is the transport layer for WireGuard packets — in riftgate
+// The bind parameter is the transport layer for WireGuard packets — in bamgate
 // this is a custom conn.Bind that sends packets over WebRTC data channels instead
 // of UDP.
 func NewDevice(cfg DeviceConfig, tunDev tun.Device, bind conn.Bind, logger *slog.Logger) (*Device, error) {

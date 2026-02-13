@@ -1,10 +1,10 @@
-// Command riftgate-hub runs a standalone signaling server for local/LAN
+// Command bamgate-hub runs a standalone signaling server for local/LAN
 // testing. It relays WebRTC signaling messages (SDP offers/answers, ICE
-// candidates) between connected riftgate peers.
+// candidates) between connected bamgate peers.
 //
 // Usage:
 //
-//	riftgate-hub -addr :8080
+//	bamgate-hub -addr :8080
 package main
 
 import (
@@ -16,7 +16,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/kuuji/riftgate/internal/signaling"
+	"github.com/kuuji/bamgate/internal/signaling"
 )
 
 func main() {

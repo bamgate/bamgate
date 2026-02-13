@@ -18,7 +18,7 @@ const (
 	DefaultCredentialLifetime = 24 * time.Hour
 
 	// DefaultRealm is the realm used in the long-term credential mechanism.
-	DefaultRealm = "riftgate"
+	DefaultRealm = "bamgate"
 )
 
 // GenerateCredentials creates time-limited TURN REST API credentials from a shared secret.

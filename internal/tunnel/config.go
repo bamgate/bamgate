@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/kuuji/riftgate/internal/config"
+	"github.com/kuuji/bamgate/internal/config"
 )
 
 // DeviceConfig holds the WireGuard device-level configuration.

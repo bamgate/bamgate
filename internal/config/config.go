@@ -16,7 +16,7 @@ var DefaultSTUNServers = []string{
 	"stun:stun.l.google.com:19302",
 }
 
-// Config is the top-level configuration for riftgate.
+// Config is the top-level configuration for bamgate.
 // It is persisted as a TOML file at DefaultConfigPath().
 type Config struct {
 	Cloudflare CloudflareConfig `toml:"cloudflare"`
@@ -27,7 +27,7 @@ type Config struct {
 }
 
 // CloudflareConfig stores Cloudflare account credentials used for deploying
-// and managing the signaling worker. These fields are populated by `riftgate setup`.
+// and managing the signaling worker. These fields are populated by `bamgate setup`.
 type CloudflareConfig struct {
 	// APIToken is the Cloudflare API token with Workers Scripts:Edit and
 	// Account Settings:Read permissions.
@@ -36,11 +36,11 @@ type CloudflareConfig struct {
 	// AccountID is the Cloudflare account ID associated with the API token.
 	AccountID string `toml:"account_id,omitempty"`
 
-	// WorkerName is the name of the deployed Cloudflare Worker (default: "riftgate").
+	// WorkerName is the name of the deployed Cloudflare Worker (default: "bamgate").
 	WorkerName string `toml:"worker_name,omitempty"`
 }
 
-// NetworkConfig identifies the riftgate network and its signaling server.
+// NetworkConfig identifies the bamgate network and its signaling server.
 type NetworkConfig struct {
 	// Name is a human-readable name for this network.
 	Name string `toml:"name"`
@@ -101,7 +101,7 @@ type WebRTCConfig struct {
 // DefaultConfig returns a Config populated with sensible defaults.
 // Network-specific fields (name, server_url, auth_token, turn_secret) and
 // device-specific fields (name, private_key, address) are left empty and
-// must be filled in by the user or by `riftgate init`.
+// must be filled in by the user or by `bamgate init`.
 func DefaultConfig() *Config {
 	return &Config{
 		STUN: STUNConfig{
@@ -114,7 +114,7 @@ func DefaultConfig() *Config {
 	}
 }
 
-// DefaultConfigPath returns the default path for the riftgate config file.
+// DefaultConfigPath returns the default path for the bamgate config file.
 // It respects $XDG_CONFIG_HOME if set, otherwise falls back to ~/.config.
 func DefaultConfigPath() (string, error) {
 	dir := os.Getenv("XDG_CONFIG_HOME")
@@ -125,14 +125,14 @@ func DefaultConfigPath() (string, error) {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "riftgate", "config.toml"), nil
+	return filepath.Join(dir, "bamgate", "config.toml"), nil
 }
 
 // ConfigPathForUser returns the config path for a specific user's home directory.
 // This is used when running as root (via sudo) to write config to the real user's
 // home directory instead of root's.
 func ConfigPathForUser(homeDir string) string {
-	return filepath.Join(homeDir, ".config", "riftgate", "config.toml")
+	return filepath.Join(homeDir, ".config", "bamgate", "config.toml")
 }
 
 // LoadConfig reads and decodes a TOML config file from the given path.

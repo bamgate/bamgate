@@ -1,4 +1,4 @@
-// riftgate signaling worker — JS glue for Go/Wasm Durable Object.
+// bamgate signaling worker — JS glue for Go/Wasm Durable Object.
 //
 // This file exports:
 // 1. The Worker fetch handler (auth + routing to Durable Object)
@@ -65,7 +65,7 @@ export default {
       // Forward with a header to mark this as a TURN connection.
       const turnReq = new Request(request.url, {
         method: request.method,
-        headers: new Headers([...request.headers.entries(), ["X-Riftgate-Turn", "1"]]),
+        headers: new Headers([...request.headers.entries(), ["X-Bamgate-Turn", "1"]]),
       });
       return stub.fetch(turnReq);
     }
@@ -87,7 +87,7 @@ export default {
       // Forward to DO with a special header to distinguish from WebSocket upgrade.
       const doReq = new Request(request.url, {
         method: "POST",
-        headers: { "X-Riftgate-Action": "create-invite" },
+        headers: { "X-Bamgate-Action": "create-invite" },
         body: request.body,
       });
       return stub.fetch(doReq);
@@ -102,7 +102,7 @@ export default {
 
       const doReq = new Request(request.url, {
         method: "GET",
-        headers: { "X-Riftgate-Action": "redeem-invite", "X-Riftgate-Invite-Code": inviteMatch[1] },
+        headers: { "X-Bamgate-Action": "redeem-invite", "X-Bamgate-Invite-Code": inviteMatch[1] },
       });
       return stub.fetch(doReq);
     }
@@ -123,7 +123,7 @@ export default {
 
       const doReq = new Request(request.url, {
         method: "GET",
-        headers: { "X-Riftgate-Action": "network-info" },
+        headers: { "X-Bamgate-Action": "network-info" },
       });
       return stub.fetch(doReq);
     }
@@ -449,14 +449,14 @@ export class SignalingRoom {
 
   // Handle all HTTP requests to the Durable Object.
   async fetch(request) {
-    const action = request.headers.get("X-Riftgate-Action");
+    const action = request.headers.get("X-Bamgate-Action");
 
     // Handle non-WebSocket management requests.
     if (action === "create-invite") {
       return this._handleCreateInvite(request);
     }
     if (action === "redeem-invite") {
-      const code = request.headers.get("X-Riftgate-Invite-Code");
+      const code = request.headers.get("X-Bamgate-Invite-Code");
       return this._handleRedeemInvite(code);
     }
     if (action === "network-info") {
@@ -478,7 +478,7 @@ export class SignalingRoom {
     const wsId = this.nextWsId++;
 
     // Determine if this is a TURN connection or a signaling connection.
-    const isTurn = request.headers.get("X-Riftgate-Turn") === "1";
+    const isTurn = request.headers.get("X-Bamgate-Turn") === "1";
 
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ wsId, joined: false, isTurn });

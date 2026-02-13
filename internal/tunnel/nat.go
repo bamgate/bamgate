@@ -12,14 +12,14 @@ import (
 )
 
 const (
-	// nftTableName is the nftables table name used by riftgate.
+	// nftTableName is the nftables table name used by bamgate.
 	// All rules are scoped to this table so they don't interfere with
 	// other firewall rules on the system.
-	nftTableName = "riftgate"
+	nftTableName = "bamgate"
 )
 
 // NATManager manages nftables rules for masquerading traffic from the
-// WireGuard tunnel to local network subnets. It creates a dedicated "riftgate"
+// WireGuard tunnel to local network subnets. It creates a dedicated "bamgate"
 // table with a postrouting NAT chain.
 //
 // Requires CAP_NET_ADMIN.
@@ -40,9 +40,9 @@ func NewNATManager(logger *slog.Logger) *NATManager {
 // WireGuard subnet going out through the specified interface. This is
 // equivalent to:
 //
-//	nft add table ip riftgate
-//	nft add chain ip riftgate postrouting { type nat hook postrouting priority srcnat; }
-//	nft add rule ip riftgate postrouting ip saddr <wgSubnet> oifname <outIface> masquerade
+//	nft add table ip bamgate
+//	nft add chain ip bamgate postrouting { type nat hook postrouting priority srcnat; }
+//	nft add rule ip bamgate postrouting ip saddr <wgSubnet> oifname <outIface> masquerade
 //
 // The wgSubnet should be in CIDR notation (e.g., "10.0.0.0/24").
 // The outIface is the network interface to masquerade on (e.g., "wlan0").
@@ -155,7 +155,7 @@ func (n *NATManager) SetupMasquerade(wgSubnet string, outIface string) error {
 	return nil
 }
 
-// Cleanup removes the riftgate nftables table and all its rules.
+// Cleanup removes the bamgate nftables table and all its rules.
 // This is safe to call even if SetupMasquerade was never called.
 func (n *NATManager) Cleanup() error {
 	c := n.conn
@@ -183,6 +183,6 @@ func (n *NATManager) Cleanup() error {
 		return nil
 	}
 
-	n.log.Info("nftables riftgate table removed")
+	n.log.Info("nftables bamgate table removed")
 	return nil
 }

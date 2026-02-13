@@ -15,13 +15,13 @@ func TestNormalizeServerURL(t *testing.T) {
 	}{
 		{
 			name:  "no scheme prepends wss",
-			input: "riftgate.example.workers.dev/connect",
-			want:  "wss://riftgate.example.workers.dev/connect",
+			input: "bamgate.example.workers.dev/connect",
+			want:  "wss://bamgate.example.workers.dev/connect",
 		},
 		{
 			name:  "wss scheme unchanged",
-			input: "wss://riftgate.example.workers.dev/connect",
-			want:  "wss://riftgate.example.workers.dev/connect",
+			input: "wss://bamgate.example.workers.dev/connect",
+			want:  "wss://bamgate.example.workers.dev/connect",
 		},
 		{
 			name:  "ws scheme unchanged",
@@ -30,8 +30,8 @@ func TestNormalizeServerURL(t *testing.T) {
 		},
 		{
 			name:  "https converted to wss",
-			input: "https://riftgate.example.workers.dev/connect",
-			want:  "wss://riftgate.example.workers.dev/connect",
+			input: "https://bamgate.example.workers.dev/connect",
+			want:  "wss://bamgate.example.workers.dev/connect",
 		},
 		{
 			name:  "http converted to ws",
@@ -40,8 +40,8 @@ func TestNormalizeServerURL(t *testing.T) {
 		},
 		{
 			name:  "leading and trailing whitespace trimmed",
-			input: "  riftgate.example.workers.dev/connect  ",
-			want:  "wss://riftgate.example.workers.dev/connect",
+			input: "  bamgate.example.workers.dev/connect  ",
+			want:  "wss://bamgate.example.workers.dev/connect",
 		},
 		{
 			name:    "empty string errors",

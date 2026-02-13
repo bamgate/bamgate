@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	// pfAnchorName is the PF anchor name used by riftgate.
+	// pfAnchorName is the PF anchor name used by bamgate.
 	// All NAT rules are scoped to this anchor so they don't interfere
 	// with other PF rules on the system.
-	pfAnchorName = "com.riftgate"
+	pfAnchorName = "com.bamgate"
 )
 
 // NATManager manages PF (Packet Filter) NAT rules for masquerading traffic
@@ -83,10 +83,10 @@ func (n *NATManager) SetupMasquerade(wgSubnet string, outIface string) error {
 	return nil
 }
 
-// Cleanup removes all PF rules loaded by riftgate.
+// Cleanup removes all PF rules loaded by bamgate.
 // This is safe to call even if SetupMasquerade was never called.
 func (n *NATManager) Cleanup() error {
-	// Flush all rules in the riftgate anchor.
+	// Flush all rules in the bamgate anchor.
 	cmd := exec.Command("pfctl", "-a", pfAnchorName, "-F", "all")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// Anchor may not exist, which is fine.
@@ -96,6 +96,6 @@ func (n *NATManager) Cleanup() error {
 	}
 
 	n.anchors = nil
-	n.log.Info("PF riftgate anchor flushed")
+	n.log.Info("PF bamgate anchor flushed")
 	return nil
 }

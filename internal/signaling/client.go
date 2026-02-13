@@ -12,7 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/kuuji/riftgate/pkg/protocol"
+	"github.com/kuuji/bamgate/pkg/protocol"
 )
 
 // ClientConfig holds configuration for a signaling Client.

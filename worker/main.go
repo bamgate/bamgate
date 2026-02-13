@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-// Package main implements the riftgate signaling hub and TURN relay for
+// Package main implements the bamgate signaling hub and TURN relay for
 // Cloudflare Workers. It is compiled to WebAssembly via TinyGo and bridged
 // to the JavaScript Durable Object class via syscall/js callbacks.
 package main

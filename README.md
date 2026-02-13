@@ -1,10 +1,10 @@
-# riftgate
+# bamgate
 
 A WireGuard VPN tunnel over WebRTC. Access your home network from anywhere without exposing your public IP or renting a VPS.
 
 ## How it works
 
-riftgate connects two peers through a WireGuard tunnel, using WebRTC data channels as the transport layer. A Cloudflare Worker handles signaling and acts as a TURN relay fallback — all on the free tier.
+bamgate connects two peers through a WireGuard tunnel, using WebRTC data channels as the transport layer. A Cloudflare Worker handles signaling and acts as a TURN relay fallback — all on the free tier.
 
 ```mermaid
 graph LR
@@ -32,7 +32,7 @@ Under active development. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full de
 ## Building
 
 ```bash
-go build -o riftgate ./cmd/riftgate
+go build -o bamgate ./cmd/bamgate
 ```
 
 ## License

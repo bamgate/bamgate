@@ -321,7 +321,7 @@ WireGuard TUN interface ←→ Bridge ←→ WebRTC Data Channel ←→ Remote P
 
 ### Component 4: Linux CLI
 
-**Binary name**: `riftgate`
+**Binary name**: `bamgate`
 
 **Commands:**
 ```bash
@@ -330,37 +330,37 @@ WireGuard TUN interface ←→ Bridge ←→ WebRTC Data Channel ←→ Remote P
 # - Deploys Worker + Durable Object to user's CF account via Wrangler/API
 # - Generates network auth token and TURN shared secret
 # - Generates WireGuard key pair for this device
-# - Writes config to ~/.config/riftgate/config.toml
-riftgate init
+# - Writes config to ~/.config/bamgate/config.toml
+bamgate init
 
 # Connect to the network
 # - Starts WireGuard interface
 # - Connects to signaling server
 # - Establishes WebRTC connections to online peers
 # - Bridges TUN ←→ data channels
-riftgate up
+bamgate up
 
 # Disconnect
-riftgate down
+bamgate down
 
 # Show connection status
 # - Lists connected peers
 # - Shows direct vs relayed per peer
 # - Shows ICE candidate type in use (host/srflx/relay)
 # - Shows latency per peer
-riftgate status
+bamgate status
 
 # Device management
-riftgate device add <name>     # Generate join token/QR for a new device
-riftgate device list           # List authorized devices
-riftgate device remove <name>  # Revoke a device
+bamgate device add <name>     # Generate join token/QR for a new device
+bamgate device list           # List authorized devices
+bamgate device remove <name>  # Revoke a device
 ```
 
-**Config file** (`~/.config/riftgate/config.toml`):
+**Config file** (`~/.config/bamgate/config.toml`):
 ```toml
 [network]
 name = "my-network"
-server_url = "https://riftgate-<id>.workers.dev"
+server_url = "https://bamgate-<id>.workers.dev"
 auth_token = "generated-during-init"
 turn_secret = "generated-during-init"
 
@@ -391,7 +391,7 @@ max_retransmits = 0
 
 **Screens:**
 - **Home**: Big connect/disconnect toggle. Shows status: disconnected / connecting / connected (direct) / connected (relayed). Shows connected peer name and latency.
-- **Setup**: Scan QR code from `riftgate device add` or paste join token. Configures everything automatically.
+- **Setup**: Scan QR code from `bamgate device add` or paste join token. Configures everything automatically.
 - **Settings**: Advanced options (custom STUN servers, always-on VPN, per-app VPN).
 
 **Android-specific:**
@@ -430,7 +430,7 @@ Wire up the actual VPN tunnel on the client side.
 1. `internal/tunnel/`: Set up wireguard-go with userspace TUN interface
 2. `internal/bridge/`: TUN ←→ data channel packet forwarding (the critical glue)
 3. `internal/agent/`: Top-level orchestrator tying signaling → WebRTC → bridge → WireGuard
-4. Linux CLI: `riftgate up` / `riftgate down` / `riftgate status`
+4. Linux CLI: `bamgate up` / `bamgate down` / `bamgate status`
 5. Test: two machines on the same LAN, using the local signaling hub, SSH between WireGuard IPs through the tunnel
 
 **Deliverable**: Full working VPN tunnel between two Linux machines on the same network. Still using a local/test signaling server.
@@ -465,11 +465,11 @@ Build the relay fallback so it works even through symmetric NAT.
 
 ### Phase 5: Device Management & Polish
 
-1. `riftgate init`: Automate CF Worker deployment via Cloudflare API
-2. `riftgate device add/remove/list`: Device provisioning with join tokens + QR codes
+1. `bamgate init`: Automate CF Worker deployment via Cloudflare API
+2. `bamgate device add/remove/list`: Device provisioning with join tokens + QR codes
 3. Config management: Proper persistence, key storage
 4. Reconnection: Auto-reconnect on network change, ICE restart on connectivity loss
-5. Logging: Structured logs, connection diagnostics in `riftgate status`
+5. Logging: Structured logs, connection diagnostics in `bamgate status`
 6. Systemd unit file for running the home agent as a service
 
 **Deliverable**: Polished CLI tool that's easy to set up and operates reliably.

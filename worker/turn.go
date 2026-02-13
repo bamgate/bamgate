@@ -14,12 +14,12 @@ import (
 	"syscall/js"
 	"time"
 
-	"github.com/kuuji/riftgate/worker/stun"
+	"github.com/kuuji/bamgate/worker/stun"
 )
 
 // TURN server constants.
 const (
-	turnRealm            = "riftgate"
+	turnRealm            = "bamgate"
 	defaultAllocLifetime = 600  // 10 minutes
 	maxAllocLifetime     = 3600 // 1 hour
 
