@@ -39,11 +39,44 @@ When creating a release (commit + tag + `gh release create`):
 
 ## Build / Lint / Test Commands
 
-### Go Client
+A `Makefile` in the project root provides all common build targets. Run `make help`
+for a full listing. Key targets:
 
 ```bash
-# Build
-go build -o bamgate ./cmd/bamgate
+make                # Build the bamgate CLI binary (default)
+make install        # Build and install to /usr/local/bin (requires sudo)
+make build-hub      # Build the bamgate-hub binary
+make build-all      # Build everything (cli + hub + worker + aar)
+make test           # Run all Go tests
+make lint           # Run golangci-lint
+make fmt            # Format all Go code (gofmt + goimports)
+
+make worker         # Build Cloudflare Worker (TinyGo -> Wasm)
+make worker-assets  # Copy worker artifacts to internal/deploy/assets/
+make worker-dev     # Start wrangler dev server
+make worker-deploy  # Deploy worker to Cloudflare
+
+make aar            # Build Android AAR via gomobile
+make android        # Build Android debug APK (builds AAR first)
+make install-android # Full chain: AAR -> APK -> adb install
+
+make clean          # Remove all build artifacts
+```
+
+Overridable variables (pass as `make VAR=value` or export in env):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `VERSION` | `git describe --tags --always --dirty` | Version string injected into binary |
+| `TINYGO` | `~/.local/tinygo/bin/tinygo` | TinyGo binary path |
+| `GOMOBILE` | `gomobile` | gomobile binary |
+| `OUTPUT_DIR` | `.` | Where CLI binaries are written |
+
+### Raw commands (for reference / CI)
+
+```bash
+# Build CLI
+CGO_ENABLED=0 go build -ldflags '-s -w -X main.version=VERSION' -o bamgate ./cmd/bamgate
 
 # Run all tests
 go test ./...
@@ -152,13 +185,23 @@ npx wrangler deploy
 
 ### Config
 - TOML format for config files.
+- Config file lives at `/etc/bamgate/config.toml` (system-wide, owned by root).
 - Config keys use `snake_case` (e.g., `server_url`, `auth_token`, `turn_secret`).
+
+### Installation & Service Model
+- bamgate is installed via a shell script (`install.sh`) or `bamgate update` — no package manager.
+- The binary lives at `/usr/local/bin/bamgate`.
+- The daemon runs as **root** via systemd (Linux) or launchd (macOS).
+- No `setcap` or file capabilities — root has all capabilities inherently.
+- Config at `/etc/bamgate/config.toml`, service file at `/etc/systemd/system/bamgate.service`
+  (Linux) or `/Library/LaunchDaemons/com.bamgate.bamgate.plist` (macOS).
 
 ## Project Structure
 
 ```
 cmd/bamgate/          # CLI entry point (main package)
 cmd/bamgate-hub/      # Standalone signaling hub for local/LAN testing
+install.sh            # Universal install/upgrade script
 internal/
   config/              # TOML config management, key generation
   signaling/           # WebSocket client to CF Worker

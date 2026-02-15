@@ -1,11 +1,13 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -15,6 +17,9 @@ var DefaultSTUNServers = []string{
 	"stun:stun.cloudflare.com:3478",
 	"stun:stun.l.google.com:19302",
 }
+
+// DefaultConfigDir is the system-wide config directory for bamgate.
+const DefaultConfigDir = "/etc/bamgate"
 
 // Config is the top-level configuration for bamgate.
 // It is persisted as a TOML file at DefaultConfigPath().
@@ -79,6 +84,11 @@ type DeviceConfig struct {
 	// subnets are ignored. Set to true only when you know the remote subnets
 	// do not conflict with your local network.
 	AcceptRoutes bool `toml:"accept_routes,omitempty"`
+
+	// ForceRelay forces all WebRTC connections to use the TURN relay,
+	// bypassing direct (host/srflx) connectivity. Useful for testing
+	// the TURN relay path or when direct connectivity is unreliable.
+	ForceRelay bool `toml:"force_relay,omitempty"`
 }
 
 // STUNConfig lists the STUN servers used for ICE NAT traversal.
@@ -115,8 +125,14 @@ func DefaultConfig() *Config {
 }
 
 // DefaultConfigPath returns the default path for the bamgate config file.
-// It respects $XDG_CONFIG_HOME if set, otherwise falls back to ~/.config.
+// The config is stored at /etc/bamgate/config.toml since the daemon runs as root.
 func DefaultConfigPath() (string, error) {
+	return filepath.Join(DefaultConfigDir, "config.toml"), nil
+}
+
+// LegacyConfigPath returns the old user-level config path (~/.config/bamgate/config.toml).
+// This is used for migration detection when upgrading from older versions.
+func LegacyConfigPath() (string, error) {
 	dir := os.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -128,10 +144,9 @@ func DefaultConfigPath() (string, error) {
 	return filepath.Join(dir, "bamgate", "config.toml"), nil
 }
 
-// ConfigPathForUser returns the config path for a specific user's home directory.
-// This is used when running as root (via sudo) to write config to the real user's
-// home directory instead of root's.
-func ConfigPathForUser(homeDir string) string {
+// LegacyConfigPathForUser returns the old user-level config path for a specific
+// user's home directory. Used for migration detection during setup.
+func LegacyConfigPathForUser(homeDir string) string {
 	return filepath.Join(homeDir, ".config", "bamgate", "config.toml")
 }
 
@@ -180,6 +195,27 @@ func (c *Config) PublicKey() (Key, error) {
 		return Key{}, errors.New("device private key is not set")
 	}
 	return PublicKey(c.Device.PrivateKey), nil
+}
+
+// ParseTOML decodes a TOML config from a string. This is used by the mobile
+// binding layer where configs are passed as strings rather than file paths.
+func ParseTOML(s string) (*Config, error) {
+	cfg := DefaultConfig()
+	if _, err := toml.Decode(s, cfg); err != nil {
+		return nil, fmt.Errorf("decoding TOML config: %w", err)
+	}
+	applyDefaults(cfg)
+	return cfg, nil
+}
+
+// MarshalTOML encodes a Config to a TOML string.
+func MarshalTOML(cfg *Config) (string, error) {
+	var buf bytes.Buffer
+	enc := toml.NewEncoder(&buf)
+	if err := enc.Encode(cfg); err != nil {
+		return "", fmt.Errorf("encoding TOML config: %w", err)
+	}
+	return strings.TrimSpace(buf.String()), nil
 }
 
 // applyDefaults fills in default values for optional fields that are

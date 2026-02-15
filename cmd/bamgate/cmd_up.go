@@ -27,21 +27,19 @@ var upCmd = &cobra.Command{
 	Long: `Start the bamgate agent: create a WireGuard tunnel, connect to the
 signaling server, and bridge traffic over WebRTC data channels.
 
-On Linux, requires CAP_NET_ADMIN capability. Run 'sudo bamgate setup'
-to set capabilities, then 'bamgate up' works without sudo.
+Requires root privileges for TUN device creation:
+  sudo bamgate up
 
-On macOS, run with sudo: sudo bamgate up
-
-Use -d/--daemon to start bamgate as a systemd service (enables on boot
-and starts immediately). Requires 'sudo bamgate setup' with the systemd
-service option first.`,
+Use -d/--daemon to start bamgate as a system service (systemd on Linux,
+launchd on macOS). The service is enabled on boot and started immediately.
+Requires 'sudo bamgate setup' first.`,
 	RunE: runUp,
 }
 
 const systemdServicePath = "/etc/systemd/system/bamgate.service"
 
 func init() {
-	upCmd.Flags().BoolVarP(&upDaemon, "daemon", "d", false, "start as a systemd service (enable + start)")
+	upCmd.Flags().BoolVarP(&upDaemon, "daemon", "d", false, "start as a system service (enable + start)")
 	upCmd.Flags().BoolVar(&upAcceptRoutes, "accept-routes", false, "accept subnet routes advertised by peers")
 }
 
@@ -80,10 +78,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 		}
 		// Provide actionable guidance for TUN permission errors.
 		if strings.Contains(err.Error(), "operation not permitted") || strings.Contains(err.Error(), "not permitted") {
-			if runtime.GOOS == "darwin" {
-				return fmt.Errorf("agent error: %w\n\nTUN device creation requires root privileges.\nRun: sudo bamgate up", err)
-			}
-			return fmt.Errorf("agent error: %w\n\nMissing network capabilities. Run: sudo bamgate setup", err)
+			return fmt.Errorf("agent error: %w\n\nTUN device creation requires root privileges.\nRun: sudo bamgate up", err)
 		}
 		return fmt.Errorf("agent error: %w", err)
 	}
@@ -91,18 +86,30 @@ func runUp(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runUpDaemon starts bamgate as a systemd service (enable + start).
+// runUpDaemon starts bamgate as a system service (enable + start).
 func runUpDaemon() error {
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("daemon mode (-d) requires systemd and is only supported on Linux; launchd support is not yet implemented\n\nRun 'sudo bamgate up' (without -d) to start in the foreground")
+	if os.Getuid() != 0 {
+		return fmt.Errorf("daemon mode requires root (try: sudo bamgate up -d)")
 	}
+
+	switch runtime.GOOS {
+	case "linux":
+		return runUpDaemonLinux()
+	case "darwin":
+		return runUpDaemonDarwin()
+	default:
+		return fmt.Errorf("daemon mode is not supported on %s", runtime.GOOS)
+	}
+}
+
+func runUpDaemonLinux() error {
 	if _, err := os.Stat(systemdServicePath); os.IsNotExist(err) {
 		return fmt.Errorf("systemd service not installed; run 'sudo bamgate setup' first and choose to install the systemd service")
 	}
 
 	fmt.Fprintln(os.Stderr, "Enabling and starting bamgate service...")
 
-	systemctl := exec.Command("sudo", "systemctl", "enable", "--now", "bamgate")
+	systemctl := exec.Command("systemctl", "enable", "--now", "bamgate")
 	systemctl.Stdout = os.Stderr
 	systemctl.Stderr = os.Stderr
 	if err := systemctl.Run(); err != nil {
@@ -111,7 +118,29 @@ func runUpDaemon() error {
 
 	fmt.Fprintln(os.Stderr, "bamgate is running and enabled on boot.")
 	fmt.Fprintln(os.Stderr, "Use 'bamgate status' to check connection state.")
-	fmt.Fprintln(os.Stderr, "Use 'bamgate down' to stop and disable.")
+	fmt.Fprintln(os.Stderr, "Use 'sudo bamgate down' to stop and disable.")
+
+	return nil
+}
+
+func runUpDaemonDarwin() error {
+	if _, err := os.Stat(launchdPlistPath); os.IsNotExist(err) {
+		return fmt.Errorf("launchd service not installed; run 'sudo bamgate setup' first and choose to install the launchd service")
+	}
+
+	fmt.Fprintln(os.Stderr, "Loading and starting bamgate service...")
+
+	// Bootstrap (load + start) the service.
+	launchctl := exec.Command("launchctl", "load", "-w", launchdPlistPath)
+	launchctl.Stdout = os.Stderr
+	launchctl.Stderr = os.Stderr
+	if err := launchctl.Run(); err != nil {
+		return fmt.Errorf("launchctl load: %w", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "bamgate is running and enabled on boot.")
+	fmt.Fprintln(os.Stderr, "Use 'bamgate status' to check connection state.")
+	fmt.Fprintln(os.Stderr, "Use 'sudo bamgate down' to stop and disable.")
 
 	return nil
 }
@@ -144,7 +173,7 @@ func loadConfig() (*config.Config, error) {
 }
 
 // resolvedConfigPath returns the config file path, using the global flag
-// if set, otherwise the default XDG path.
+// if set, otherwise the default system path (/etc/bamgate/config.toml).
 func resolvedConfigPath() string {
 	if globalConfigPath != "" {
 		return globalConfigPath

@@ -16,36 +16,27 @@ import (
 	"time"
 )
 
-// ResolveSocketPath returns the best socket path for the current environment.
+// ResolveSocketPath returns the socket path for the control server.
 //
-// On Linux, it checks in order:
-//  1. /run/bamgate/ — if writable (systemd RuntimeDirectory= or root)
-//  2. $XDG_RUNTIME_DIR/bamgate/ — user-writable runtime directory
-//  3. /tmp/bamgate/ — fallback
+// Since bamgate runs as root, the socket is placed in the system runtime
+// directory. On Linux, systemd's RuntimeDirectory= creates /run/bamgate
+// automatically. On macOS, /var/run/bamgate is used.
 //
-// On macOS, it checks in order:
-//  1. /var/run/bamgate/ — system runtime directory (requires root)
-//  2. /tmp/bamgate/ — fallback
+// Falls back to /tmp/bamgate if the system directory doesn't exist yet
+// (e.g. running outside of a service).
 func ResolveSocketPath() string {
 	if runtime.GOOS == "darwin" {
-		// macOS: /var/run is the standard location for runtime data.
 		if info, err := os.Stat("/var/run/bamgate"); err == nil && info.IsDir() {
 			return "/var/run/bamgate/control.sock"
 		}
 		return "/tmp/bamgate/control.sock"
 	}
 
-	// Linux: check if the systemd-managed directory exists and is writable.
+	// Linux: prefer the systemd-managed directory.
 	if info, err := os.Stat("/run/bamgate"); err == nil && info.IsDir() {
 		return "/run/bamgate/control.sock"
 	}
 
-	// Fall back to XDG_RUNTIME_DIR.
-	if xdgDir := os.Getenv("XDG_RUNTIME_DIR"); xdgDir != "" {
-		return filepath.Join(xdgDir, "bamgate", "control.sock")
-	}
-
-	// Last resort.
 	return "/tmp/bamgate/control.sock"
 }
 

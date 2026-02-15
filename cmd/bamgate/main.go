@@ -41,7 +41,7 @@ over WebRTC data channels, using Cloudflare Workers for signaling.`,
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&globalConfigPath, "config", "", "path to config file (default: ~/.config/bamgate/config.toml)")
+	rootCmd.PersistentFlags().StringVar(&globalConfigPath, "config", "", "path to config file (default: /etc/bamgate/config.toml)")
 	rootCmd.PersistentFlags().BoolVarP(&globalVerbose, "verbose", "v", false, "enable debug logging")
 
 	rootCmd.AddCommand(setupCmd)
@@ -49,12 +49,10 @@ func init() {
 	rootCmd.AddCommand(downCmd)
 	rootCmd.AddCommand(inviteCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(genkeyCmd)
 	rootCmd.AddCommand(versionCmd)
-
-	// Deprecated: init is superseded by setup.
-	initCmd.Deprecated = "use 'bamgate setup' instead"
-	rootCmd.AddCommand(initCmd)
 }
 
 // versionCmd prints the build version.

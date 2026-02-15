@@ -11,10 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -33,16 +31,15 @@ var setupCmd = &cobra.Command{
 
   1. Deploy the signaling worker to Cloudflare (or detect existing deployment)
   2. Configure this device (name, WireGuard keys, tunnel address)
-  3. Set network capabilities on the binary (Linux)
-  4. Optionally install the systemd service
+  3. Install a system service (systemd on Linux, launchd on macOS)
 
 If you have an invite code from another device, setup will use it to
 retrieve the server configuration automatically — no Cloudflare account needed.
 
-If bamgate is already configured, setup will re-apply capabilities and
-update the systemd service (if installed). Use --force to redo full setup.
+If bamgate is already configured, setup will update the system service
+if installed. Use --force to redo full setup.
 
-This command should be run with sudo:
+This command must be run as root:
   sudo bamgate setup`,
 	RunE: runSetup,
 }
@@ -60,12 +57,12 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("setup must be run as root (try: sudo bamgate setup)")
 	}
 
-	// Resolve the real (non-root) user who invoked sudo.
-	realUser, err := resolveRealUser()
-	if err != nil {
-		return fmt.Errorf("resolving user: %w", err)
+	cfgPath := resolvedConfigPath()
+
+	// Check for legacy config and migrate if needed.
+	if err := migrateConfig(cfgPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: config migration check failed: %v\n", err)
 	}
-	cfgPath := config.ConfigPathForUser(realUser.HomeDir)
 
 	// Check for existing config.
 	existingCfg, _ := config.LoadConfig(cfgPath)
@@ -78,46 +75,97 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Overwriting (--force).\n\n")
 	}
 
-	return runSetupFull(cfgPath, realUser)
+	return runSetupFull(cfgPath)
+}
+
+// migrateConfig checks for a config file at the old user-level path
+// (~/.config/bamgate/config.toml) and copies it to the new system path
+// (/etc/bamgate/config.toml) if the new path doesn't already exist.
+func migrateConfig(newPath string) error {
+	// If the new path already has a config, nothing to do.
+	if _, err := os.Stat(newPath); err == nil {
+		return nil
+	}
+
+	// Check the legacy path for the user who invoked sudo.
+	legacyPath, err := legacyConfigPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		return nil // No legacy config either.
+	}
+
+	fmt.Fprintf(os.Stderr, "Found existing config at legacy path: %s\n", legacyPath)
+	fmt.Fprintf(os.Stderr, "Migrating to %s\n\n", newPath)
+
+	// Read and copy the config.
+	data, err := os.ReadFile(legacyPath)
+	if err != nil {
+		return fmt.Errorf("reading legacy config: %w", err)
+	}
+
+	dir := filepath.Dir(newPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	if err := os.WriteFile(newPath, data, 0600); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Config migrated. You can remove the old file:\n")
+	fmt.Fprintf(os.Stderr, "  rm %s\n\n", legacyPath)
+
+	return nil
+}
+
+// legacyConfigPath returns the old user-level config path, resolving the
+// actual user when running via sudo.
+func legacyConfigPath() (string, error) {
+	// If running via sudo, check the real user's home.
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		home := os.Getenv("SUDO_HOME")
+		if home == "" {
+			// Common fallback: /home/<user>
+			home = filepath.Join("/home", sudoUser)
+		}
+		return config.LegacyConfigPathForUser(home), nil
+	}
+	return config.LegacyConfigPath()
 }
 
 // runSetupExisting handles the case where bamgate is already configured.
-// It re-applies capabilities (Linux) and updates the systemd service if installed.
+// It updates the system service if installed.
 func runSetupExisting(cfgPath string) error {
 	fmt.Fprintf(os.Stderr, "bamgate is already configured: %s\n\n", cfgPath)
 
-	// Set capabilities (Linux only).
 	if runtime.GOOS == "linux" {
-		if err := setCapabilities(); err != nil {
-			return err
-		}
-
 		// Update systemd service if it exists.
 		if _, err := os.Stat(systemdServicePath); err == nil {
-			binaryPath, err := resolveCurrentBinary()
-			if err != nil {
-				return err
-			}
 			fmt.Fprintf(os.Stderr, "Updating systemd service...\n")
-			if err := installSystemdService(binaryPath); err != nil {
+			if err := installSystemdService(); err != nil {
 				return fmt.Errorf("updating systemd service: %w", err)
 			}
 		}
+	} else if runtime.GOOS == "darwin" {
+		// Update launchd service if it exists.
+		if _, err := os.Stat(launchdPlistPath); err == nil {
+			fmt.Fprintf(os.Stderr, "Updating launchd service...\n")
+			if err := installLaunchdService(); err != nil {
+				return fmt.Errorf("updating launchd service: %w", err)
+			}
+		}
 	}
 
-	fmt.Fprintf(os.Stderr, "\nSetup complete.")
-	if runtime.GOOS == "darwin" {
-		fmt.Fprintf(os.Stderr, " Run 'sudo bamgate up' to connect.\n")
-	} else {
-		fmt.Fprintf(os.Stderr, " Run 'bamgate up' to connect.\n")
-	}
+	fmt.Fprintf(os.Stderr, "\nSetup complete. Run 'sudo bamgate up' to connect.\n")
 	fmt.Fprintf(os.Stderr, "Use --force to redo full setup.\n")
 
 	return nil
 }
 
 // runSetupFull runs the full interactive setup wizard.
-func runSetupFull(cfgPath string, realUser *user.User) error {
+func runSetupFull(cfgPath string) error {
 	scanner := bufio.NewScanner(os.Stdin)
 	ctx := context.Background()
 
@@ -160,46 +208,35 @@ func runSetupFull(cfgPath string, realUser *user.User) error {
 
 	fmt.Fprintf(os.Stderr, "  WireGuard key pair generated\n")
 
-	// --- Save config (as real user) ---
+	// --- Save config ---
 	if err := config.SaveConfig(cfgPath, cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
-	chownForUser(cfgPath, realUser)
 	fmt.Fprintf(os.Stderr, "  Config written to %s\n", cfgPath)
 
-	// --- Set capabilities / install ---
-	fmt.Fprintf(os.Stderr, "\nInstallation\n")
-	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 12))
+	// --- Install system service ---
+	fmt.Fprintf(os.Stderr, "\nService Installation\n")
+	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 20))
 
 	if runtime.GOOS == "linux" {
-		if err := setCapabilities(); err != nil {
-			return err
-		}
-
-		// Optionally install systemd service.
 		if promptYesNo(scanner, "Install systemd service?", true) {
-			binaryPath, err := resolveCurrentBinary()
-			if err != nil {
-				return err
-			}
-			if err := installSystemdService(binaryPath); err != nil {
+			if err := installSystemdService(); err != nil {
 				return fmt.Errorf("installing systemd service: %w", err)
 			}
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "  Note: macOS requires sudo to run bamgate (no setcap equivalent).\n")
+	} else if runtime.GOOS == "darwin" {
+		if promptYesNo(scanner, "Install launchd service?", true) {
+			if err := installLaunchdService(); err != nil {
+				return fmt.Errorf("installing launchd service: %w", err)
+			}
+		}
 	}
 
 	// --- Done ---
-	fmt.Fprintf(os.Stderr, "\nSetup complete!")
-	if runtime.GOOS == "darwin" {
-		fmt.Fprintf(os.Stderr, " Run 'sudo bamgate up' to connect.\n")
-	} else {
-		fmt.Fprintf(os.Stderr, " Run 'bamgate up' to connect.\n")
-	}
+	fmt.Fprintf(os.Stderr, "\nSetup complete! Run 'sudo bamgate up' to connect.\n")
 	fmt.Fprintf(os.Stderr, "  Public key: %s\n", pubKey.String())
 	fmt.Fprintf(os.Stderr, "\nTo add another device to this network, run on a connected device:\n")
-	fmt.Fprintf(os.Stderr, "  bamgate invite\n")
+	fmt.Fprintf(os.Stderr, "  sudo bamgate invite\n")
 
 	return nil
 }
@@ -496,95 +533,10 @@ func generateAuthToken() (string, error) {
 	return "bg_" + hex.EncodeToString(b), nil
 }
 
-// setCapabilities sets CAP_NET_ADMIN and CAP_NET_RAW on the current binary
-// so bamgate can create TUN devices without running as root.
-// Only applicable on Linux.
-func setCapabilities() error {
-	binaryPath, err := resolveCurrentBinary()
-	if err != nil {
-		return err
-	}
-
-	fmt.Fprintf(os.Stderr, "Setting capabilities on %s\n", binaryPath)
-	setcap := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", binaryPath)
-	setcap.Stdout = os.Stderr
-	setcap.Stderr = os.Stderr
-	if err := setcap.Run(); err != nil {
-		return fmt.Errorf("setcap failed (is libcap installed?): %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "  Capabilities set\n")
-
-	return nil
-}
-
-// resolveCurrentBinary returns the absolute path to the currently running
-// binary, resolving any symlinks.
-func resolveCurrentBinary() (string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("finding current binary: %w", err)
-	}
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		return "", fmt.Errorf("resolving binary path: %w", err)
-	}
-	return self, nil
-}
-
-// resolveRealUser returns the non-root user who invoked sudo.
-// Falls back to the current user if SUDO_USER is not set.
-func resolveRealUser() (*user.User, error) {
-	username := os.Getenv("SUDO_USER")
-	if username == "" {
-		return user.Current()
-	}
-	return user.Lookup(username)
-}
-
-// installSystemdService writes the service file and updates the ExecStart path.
-// The service runs as the real user (from SUDO_USER), not root — capabilities
-// are granted via AmbientCapabilities.
-//
-// If the binary is under /home (e.g., Homebrew on Linux), it is copied to
-// /usr/local/bin/bamgate. Binaries under /home carry the SELinux label
-// user_home_t, which systemd services are not permitted to execute.
-func installSystemdService(binaryPath string) error {
-	u, err := resolveRealUser()
-	if err != nil {
-		return fmt.Errorf("resolving user for systemd service: %w", err)
-	}
-
-	// Look up the user's primary group name.
-	grp, err := user.LookupGroupId(u.Gid)
-	if err != nil {
-		return fmt.Errorf("resolving group for uid %s: %w", u.Gid, err)
-	}
-
-	// If the binary lives under /home (common with Homebrew on Linux), copy
-	// it to a system path. SELinux labels files under /home as user_home_t,
-	// which prevents systemd services from executing them (status=203/EXEC).
-	// Copying to /usr/local/bin gives the binary the correct bin_t label.
-	const systemBinaryPath = "/usr/local/bin/bamgate"
-	serviceBinary := binaryPath
-	if strings.HasPrefix(binaryPath, "/home/") {
-		fmt.Fprintf(os.Stderr, "Binary is under /home — copying to %s for systemd compatibility\n", systemBinaryPath)
-		if err := copyBinary(binaryPath, systemBinaryPath, 0755); err != nil {
-			return fmt.Errorf("copying binary to %s: %w", systemBinaryPath, err)
-		}
-		// Set capabilities on the copy.
-		setcap := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", systemBinaryPath)
-		setcap.Stdout = os.Stderr
-		setcap.Stderr = os.Stderr
-		if err := setcap.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: setcap on %s failed: %v\n", systemBinaryPath, err)
-		}
-		serviceBinary = systemBinaryPath
-		fmt.Fprintf(os.Stderr, "  Copied and set capabilities on %s\n", systemBinaryPath)
-	}
-
-	fmt.Fprintf(os.Stderr, "Service will run as user=%s group=%s\n", u.Username, grp.Name)
-
-	serviceContent := fmt.Sprintf(`[Unit]
+// installSystemdService writes the systemd service file for bamgate.
+// The service runs as root with full network capabilities.
+func installSystemdService() error {
+	serviceContent := `[Unit]
 Description=bamgate - WireGuard VPN tunnel over WebRTC
 Documentation=https://github.com/bamgate/bamgate
 After=network-online.target
@@ -592,30 +544,23 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%s up
+ExecStart=/usr/local/bin/bamgate up
 Restart=on-failure
 RestartSec=5
-
-# Run as the installing user, not root. Capabilities are granted below.
-User=%s
-Group=%s
 
 # Runtime directory for the control socket.
 RuntimeDirectory=bamgate
 RuntimeDirectoryMode=0755
 
-# Security hardening.
-# bamgate needs CAP_NET_ADMIN to create TUN devices and configure interfaces,
-# and CAP_NET_RAW for raw socket operations used by WireGuard.
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
-NoNewPrivileges=yes
+# State directory for persistent data.
+StateDirectory=bamgate
+StateDirectoryMode=0700
 
-# Filesystem restrictions.
+# Security hardening.
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/run/bamgate
+ReadWritePaths=/run/bamgate /etc/bamgate
 PrivateTmp=yes
+NoNewPrivileges=yes
 
 # Network access (required).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
@@ -633,7 +578,7 @@ RestrictSUIDSGID=yes
 
 [Install]
 WantedBy=multi-user.target
-`, serviceBinary, u.Username, grp.Name)
+`
 
 	fmt.Fprintf(os.Stderr, "Installing systemd service to %s\n", systemdServicePath)
 
@@ -649,71 +594,50 @@ WantedBy=multi-user.target
 		fmt.Fprintf(os.Stderr, "Warning: systemctl daemon-reload failed: %v\n", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "  systemd service installed\n")
+
 	return nil
 }
 
-// copyBinary copies src to dst with the given permissions.
-// Uses write-to-temp + rename for atomic replacement, which avoids
-// ETXTBSY ("text file busy") when the destination binary is running.
-func copyBinary(src, dst string, perm os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("opening source: %w", err)
-	}
-	defer in.Close()
+// launchdPlistPath is the path for the launchd plist on macOS.
+const launchdPlistPath = "/Library/LaunchDaemons/com.bamgate.bamgate.plist"
 
-	// Write to a temp file in the same directory so rename is atomic.
-	dir := filepath.Dir(dst)
-	tmp, err := os.CreateTemp(dir, ".bamgate-copy-*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
+// installLaunchdService writes the launchd plist for bamgate on macOS.
+// The service runs as root at boot.
+func installLaunchdService() error {
+	plistContent := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bamgate.bamgate</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/bamgate</string>
+    <string>up</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/var/log/bamgate.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/bamgate.log</string>
+</dict>
+</plist>
+`
 
-	// Clean up the temp file on any error path.
-	defer func() {
-		if tmpPath != "" {
-			os.Remove(tmpPath)
-		}
-	}()
+	fmt.Fprintf(os.Stderr, "Installing launchd service to %s\n", launchdPlistPath)
 
-	if _, err := io.Copy(tmp, in); err != nil {
-		tmp.Close()
-		return fmt.Errorf("copying data: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return fmt.Errorf("setting permissions: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp file: %w", err)
+	if err := os.WriteFile(launchdPlistPath, []byte(plistContent), 0644); err != nil {
+		return fmt.Errorf("writing plist file: %w", err)
 	}
 
-	// Atomic rename replaces the destination even if it's running.
-	if err := os.Rename(tmpPath, dst); err != nil {
-		return fmt.Errorf("renaming to destination: %w", err)
-	}
-	tmpPath = "" // Prevent deferred removal.
+	fmt.Fprintf(os.Stderr, "  launchd service installed\n")
+
 	return nil
-}
-
-// chownForUser sets file and parent directory ownership to the given user.
-// This is used when running as root to ensure config files are owned by the
-// real user who invoked sudo.
-func chownForUser(path string, u *user.User) {
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil || uid == 0 {
-		return
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return
-	}
-
-	// Chown the file itself.
-	_ = os.Chown(path, uid, gid)
-
-	// Walk up through bamgate config directory.
-	dir := filepath.Dir(path)
-	_ = os.Chown(dir, uid, gid)
 }

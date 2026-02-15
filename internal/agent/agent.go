@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/pion/webrtc/v4"
+	"golang.zx2c4.com/wireguard/tun"
 
 	"github.com/kuuji/bamgate/internal/bridge"
 	"github.com/kuuji/bamgate/internal/config"
@@ -29,12 +30,65 @@ import (
 	"github.com/kuuji/bamgate/pkg/protocol"
 )
 
+// SocketProtector is called to protect a socket file descriptor from VPN
+// routing. On Android, this maps to VpnService.protect(fd) which exempts
+// the socket from the VPN's routing rules, preventing routing loops.
+//
+// Returns true if the socket was successfully protected.
+type SocketProtector interface {
+	Protect(fd int) bool
+}
+
+// RouteUpdateFunc is called when the agent discovers new routes from a peer
+// that should be added to the VPN routing table. On Android, this triggers
+// a VPN restart with updated routes in VpnService.Builder.
+//
+// The routes parameter is a list of CIDR strings (e.g. ["192.168.1.0/24"]).
+// The callback must not block — the caller should handle the update
+// asynchronously.
+type RouteUpdateFunc func(routes []string)
+
+// Option configures optional Agent behavior.
+type Option func(*options)
+
+type options struct {
+	tunFD               int             // if > 0, use this FD instead of creating a TUN
+	socketProtector     SocketProtector // optional callback to protect sockets from VPN routing
+	routeUpdateCallback RouteUpdateFunc // optional callback when new peer routes are discovered
+}
+
+// WithTunFD configures the agent to use an existing TUN file descriptor
+// instead of creating a new TUN device. This is used on Android where
+// the VpnService creates the TUN FD via VpnService.Builder.establish().
+//
+// When a TUN FD is provided, the agent skips TUN interface configuration
+// (address, routes, link-up) since the Android VpnService already handles that.
+func WithTunFD(fd int) Option {
+	return func(o *options) { o.tunFD = fd }
+}
+
+// WithSocketProtector sets a callback that is invoked for each socket the
+// agent opens (signaling WebSocket, WebRTC UDP sockets). On Android, this
+// should call VpnService.protect() to prevent routing loops.
+func WithSocketProtector(p SocketProtector) Option {
+	return func(o *options) { o.socketProtector = p }
+}
+
+// WithRouteUpdateCallback sets a callback that fires when the agent discovers
+// new subnet routes from a peer. On Android, this is used to restart the VPN
+// with updated routes in VpnService.Builder so traffic to the peer's LAN
+// subnets is routed through the TUN interface.
+func WithRouteUpdateCallback(fn RouteUpdateFunc) Option {
+	return func(o *options) { o.routeUpdateCallback = fn }
+}
+
 // Agent orchestrates the bamgate VPN tunnel. It connects to the signaling
 // server, establishes WebRTC connections with peers, and bridges WireGuard
 // traffic over data channels.
 type Agent struct {
-	cfg *config.Config
-	log *slog.Logger
+	cfg  *config.Config
+	opts options
+	log  *slog.Logger
 
 	bind      *bridge.Bind
 	wgDevice  *tunnel.Device
@@ -44,11 +98,13 @@ type Agent struct {
 
 	// Forwarding and NAT state for cleanup on shutdown.
 	natManager      *tunnel.NATManager
-	forwardingState []forwardingSave // interfaces whose forwarding state was changed
+	forwardingState []forwardingSave  // interfaces whose forwarding state was changed
+	masqueradeRules []masqueradeEntry // masquerade rules for re-application by watchdog
 
-	startedAt time.Time
-	mu        sync.Mutex
-	peers     map[string]*peerState // peerID -> state
+	startedAt      time.Time
+	mu             sync.Mutex
+	peers          map[string]*peerState // peerID -> state
+	notifiedRoutes map[string]bool       // routes already sent via RouteUpdateCallback
 }
 
 // forwardingSave records the previous forwarding state for an interface so it
@@ -56,6 +112,13 @@ type Agent struct {
 type forwardingSave struct {
 	ifName          string
 	previousEnabled bool
+}
+
+// masqueradeEntry records the parameters used to set up a masquerade rule,
+// so the forwarding watchdog can re-apply it if external processes flush it.
+type masqueradeEntry struct {
+	wgSubnet string // WireGuard subnet CIDR (e.g. "10.0.0.1/24")
+	outIface string // outgoing LAN interface (e.g. "wlp1s0")
 }
 
 const (
@@ -67,6 +130,12 @@ const (
 	// before triggering an ICE restart. ICE may recover on its own if the
 	// network blip is short.
 	iceDisconnectGrace = 5 * time.Second
+
+	// forwardingCheckInterval is how often the forwarding watchdog verifies
+	// that IP forwarding and NAT masquerade rules are still in place.
+	// NetworkManager can reset per-interface forwarding on DHCP renewal,
+	// wifi reconnect, or suspend/resume.
+	forwardingCheckInterval = 30 * time.Second
 )
 
 // peerState tracks the state of a single remote peer.
@@ -85,15 +154,23 @@ type peerState struct {
 	pendingRestart bool        // true while we've sent an ICE restart offer and are awaiting an answer
 }
 
-// New creates a new Agent with the given configuration.
-func New(cfg *config.Config, logger *slog.Logger) *Agent {
+// New creates a new Agent with the given configuration. Optional functional
+// options configure Android-specific behavior (TUN FD injection, socket
+// protection).
+func New(cfg *config.Config, logger *slog.Logger, opts ...Option) *Agent {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return &Agent{
-		cfg:   cfg,
-		log:   logger.With("component", "agent"),
-		peers: make(map[string]*peerState),
+		cfg:            cfg,
+		opts:           o,
+		log:            logger.With("component", "agent"),
+		peers:          make(map[string]*peerState),
+		notifiedRoutes: make(map[string]bool),
 	}
 }
 
@@ -104,20 +181,33 @@ func (a *Agent) Run(ctx context.Context) error {
 	// 1. Create the bridge Bind.
 	a.bind = bridge.NewBind(a.log)
 
-	// 2. Create kernel TUN device.
-	tunDev, err := tunnel.CreateTUN(tunnel.DefaultTUNName, tunnel.DefaultMTU)
-	if err != nil {
-		return fmt.Errorf("creating TUN device: %w", err)
+	// 2. Create or adopt TUN device.
+	var (
+		tunDev tun.Device
+		err    error
+	)
+	if a.opts.tunFD > 0 {
+		// Android: use the TUN FD provided by VpnService.
+		tunDev, err = tunnel.CreateTUNFromFD(a.opts.tunFD)
+		if err != nil {
+			return fmt.Errorf("creating TUN device from fd %d: %w", a.opts.tunFD, err)
+		}
+		a.tunName = "tun-android"
+		a.log.Info("TUN device adopted from fd", "fd", a.opts.tunFD)
+	} else {
+		tunDev, err = tunnel.CreateTUN(tunnel.DefaultTUNName, tunnel.DefaultMTU)
+		if err != nil {
+			return fmt.Errorf("creating TUN device: %w", err)
+		}
+		// Get the actual name (may differ if OS renames it).
+		actualName, err := tunDev.Name()
+		if err != nil {
+			_ = tunDev.Close()
+			return fmt.Errorf("getting TUN device name: %w", err)
+		}
+		a.tunName = actualName
+		a.log.Info("TUN device created", "name", actualName)
 	}
-
-	// Get the actual name (may differ if OS renames it).
-	actualName, err := tunDev.Name()
-	if err != nil {
-		_ = tunDev.Close()
-		return fmt.Errorf("getting TUN device name: %w", err)
-	}
-	a.tunName = actualName
-	a.log.Info("TUN device created", "name", actualName)
 
 	// 3. Create WireGuard device with our custom Bind.
 	wgCfg := tunnel.DeviceConfig{
@@ -132,8 +222,18 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer a.cleanupForwardingAndNAT()
 
 	// 4. Configure the TUN interface IP address and bring it up.
-	if err := a.configureTUN(actualName); err != nil {
-		return fmt.Errorf("configuring TUN interface: %w", err)
+	// Skip when using an injected TUN FD (Android VpnService already configured it).
+	if a.opts.tunFD <= 0 {
+		if err := a.configureTUN(a.tunName); err != nil {
+			return fmt.Errorf("configuring TUN interface: %w", err)
+		}
+
+		// Start the forwarding watchdog if we set up forwarding/NAT.
+		// NetworkManager can reset per-interface forwarding on DHCP renewal
+		// or wifi reconnect; the watchdog detects and re-enables it.
+		if len(a.forwardingState) > 0 {
+			a.startForwardingWatchdog(ctx)
+		}
 	}
 
 	// 5. Start control server for "bamgate status".
@@ -285,16 +385,20 @@ func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) err
 		}
 
 		// Case 2: Connection is working and we're the preferred offerer.
-		// A late-arriving offer from the other side would destroy our
-		// established connection.
+		// The remote peer must have restarted (e.g. settings change, app
+		// restart). Tear down the stale connection and accept the new offer.
 		if isConnected && weArePreferred {
 			a.mu.Unlock()
-			a.log.Info("ignoring offer: connection is established and we are the preferred offerer",
+			a.log.Info("peer sent new offer while connected, tearing down stale connection",
 				"from", msg.From, "ice_state", iceState.String())
-			return nil
+			a.removePeer(msg.From)
+			hasConnection = false
+		} else {
+			a.mu.Unlock()
 		}
+	} else {
+		a.mu.Unlock()
 	}
-	a.mu.Unlock()
 
 	// Store the remote peer's WireGuard public key. The offer carries the
 	// sender's public key so the answering side can configure WireGuard
@@ -406,13 +510,22 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, addre
 	}
 
 	a.mu.Lock()
-	// Check if we already have a connection to this peer.
-	if _, exists := a.peers[peerID]; exists {
+	// Check if we already have an established connection to this peer.
+	if ps, exists := a.peers[peerID]; exists && ps.rtcPeer != nil {
+		state := ps.rtcPeer.ConnectionState()
+		if state == webrtc.ICEConnectionStateConnected || state == webrtc.ICEConnectionStateCompleted {
+			a.mu.Unlock()
+			a.log.Debug("already connected to peer, skipping", "peer_id", peerID)
+			return nil
+		}
+		// Existing connection is not established (e.g. still checking for a
+		// stale peer). Tear it down and reconnect with the real peer.
 		a.mu.Unlock()
-		a.log.Debug("already connected to peer, skipping", "peer_id", peerID)
-		return nil
+		a.log.Info("replacing stale connection", "peer_id", peerID, "ice_state", state.String())
+		a.removePeer(peerID)
+	} else {
+		a.mu.Unlock()
 	}
-	a.mu.Unlock()
 
 	peer, err := a.createRTCPeer(ctx, peerID)
 	if err != nil {
@@ -447,10 +560,23 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, addre
 func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer, error) {
 	iceConfig := rtcpkg.ICEConfig{
 		STUNServers: a.cfg.STUN.Servers,
+		ForceRelay:  a.cfg.Device.ForceRelay,
+	}
+
+	// Build a SettingEngine. We always create one so we can set the socket
+	// protector (Android) and/or the TURN proxy dialer.
+	se := webrtc.SettingEngine{}
+	needCustomAPI := false
+
+	// Socket protection: on Android, pion's UDP sockets must be protected
+	// from VPN routing via VpnService.protect(). We do this by hooking into
+	// pion's network interface.
+	if a.opts.socketProtector != nil {
+		se.SetNet(newProtectedNet(a.opts.socketProtector))
+		needCustomAPI = true
 	}
 
 	// Configure TURN relay if a shared secret is available.
-	var rtcAPI *webrtc.API
 	if a.cfg.Network.TURNSecret != "" {
 		turnURL, err := turn.TURNServerURL(a.cfg.Network.ServerURL)
 		if err != nil {
@@ -469,12 +595,11 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 
 				// Set up the WebSocket proxy dialer so pion/ice routes
 				// TURN traffic through our Cloudflare Worker.
-				se := webrtc.SettingEngine{}
 				se.SetICEProxyDialer(&turn.WSProxyDialer{
 					TURNEndpoint: turnWSURL,
 					AuthToken:    a.cfg.Network.AuthToken,
 				})
-				rtcAPI = webrtc.NewAPI(webrtc.WithSettingEngine(se))
+				needCustomAPI = true
 
 				a.log.Info("TURN relay configured",
 					"turn_url", turnURL,
@@ -483,6 +608,11 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 				)
 			}
 		}
+	}
+
+	var rtcAPI *webrtc.API
+	if needCustomAPI {
+		rtcAPI = webrtc.NewAPI(webrtc.WithSettingEngine(se))
 	}
 
 	peer, err := rtcpkg.NewPeer(rtcpkg.PeerConfig{
@@ -615,6 +745,30 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 			} else {
 				a.log.Info("added route", "peer_id", peerID, "route", route, "dev", a.tunName)
 			}
+		}
+	}
+
+	// Notify the route update callback (Android VPN restart) if the peer
+	// advertises routes we haven't seen before. The callback must not
+	// block — the Android side handles the VPN restart asynchronously.
+	if a.opts.routeUpdateCallback != nil && a.cfg.Device.AcceptRoutes && len(ps.routes) > 0 {
+		var newRoutes []string
+		a.mu.Lock()
+		for _, route := range ps.routes {
+			if !isValidRoute(route) {
+				continue
+			}
+			if !a.notifiedRoutes[route] {
+				a.notifiedRoutes[route] = true
+				newRoutes = append(newRoutes, route)
+			}
+		}
+		a.mu.Unlock()
+
+		if len(newRoutes) > 0 {
+			a.log.Info("notifying route update callback with new peer routes",
+				"peer_id", peerID, "routes", newRoutes)
+			a.opts.routeUpdateCallback(newRoutes)
 		}
 	}
 }
@@ -932,6 +1086,13 @@ func (a *Agent) setupForwardingAndNAT(tunIface string) error {
 			return fmt.Errorf("setting up masquerade for %s via %s: %w", route, outIface, err)
 		}
 
+		// Record the masquerade rule so the watchdog can re-apply it if
+		// an external process (e.g. NetworkManager) flushes nftables.
+		a.masqueradeRules = append(a.masqueradeRules, masqueradeEntry{
+			wgSubnet: a.cfg.Device.Address,
+			outIface: outIface,
+		})
+
 		a.log.Info("forwarding and NAT configured for route",
 			"route", route, "out_iface", outIface, "tun_iface", tunIface)
 	}
@@ -996,6 +1157,74 @@ func (a *Agent) cleanupForwardingAndNAT() {
 			a.log.Warn("cleaning up nftables rules", "error", err)
 		}
 		a.natManager = nil
+	}
+}
+
+// startForwardingWatchdog launches a background goroutine that periodically
+// verifies IP forwarding and NAT masquerade rules are still in place.
+// NetworkManager and similar tools can reset per-interface forwarding sysctl
+// on DHCP renewal, wifi reconnect, or suspend/resume. The watchdog detects
+// and re-applies these settings.
+//
+// The goroutine is owned by Run() and exits when ctx is cancelled.
+func (a *Agent) startForwardingWatchdog(ctx context.Context) {
+	ticker := time.NewTicker(forwardingCheckInterval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.checkAndRepairForwarding()
+			}
+		}
+	}()
+	a.log.Debug("forwarding watchdog started", "interval", forwardingCheckInterval)
+}
+
+// checkAndRepairForwarding verifies that IP forwarding is still enabled on
+// all interfaces the agent configured, and that nftables masquerade rules
+// are still present. Re-applies any settings that were reset externally.
+func (a *Agent) checkAndRepairForwarding() {
+	// Check per-interface forwarding.
+	for _, s := range a.forwardingState {
+		if s.previousEnabled {
+			continue // Was already enabled before we started; not our responsibility.
+		}
+		enabled, err := tunnel.GetForwarding(s.ifName)
+		if err != nil {
+			a.log.Warn("forwarding watchdog: cannot read forwarding state",
+				"interface", s.ifName, "error", err)
+			continue
+		}
+		if !enabled {
+			a.log.Warn("forwarding watchdog: forwarding was disabled externally, re-enabling",
+				"interface", s.ifName)
+			if err := tunnel.SetForwarding(s.ifName, true); err != nil {
+				a.log.Error("forwarding watchdog: failed to re-enable forwarding",
+					"interface", s.ifName, "error", err)
+			} else {
+				a.log.Info("forwarding watchdog: re-enabled IPv4 forwarding",
+					"interface", s.ifName)
+			}
+		}
+	}
+
+	// Check nftables masquerade rules.
+	if a.natManager != nil && len(a.masqueradeRules) > 0 {
+		if !a.natManager.TableExists() {
+			a.log.Warn("forwarding watchdog: nftables bamgate table was removed, re-applying masquerade rules")
+			for _, rule := range a.masqueradeRules {
+				if err := a.natManager.SetupMasquerade(rule.wgSubnet, rule.outIface); err != nil {
+					a.log.Error("forwarding watchdog: failed to re-apply masquerade rule",
+						"subnet", rule.wgSubnet, "out_iface", rule.outIface, "error", err)
+				} else {
+					a.log.Info("forwarding watchdog: re-applied masquerade rule",
+						"subnet", rule.wgSubnet, "out_iface", rule.outIface)
+				}
+			}
+		}
 	}
 }
 

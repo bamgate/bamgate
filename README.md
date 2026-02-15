@@ -24,29 +24,25 @@ graph LR
 
 ## Install
 
-### Homebrew (macOS and Linux)
+### Linux and macOS
 
 ```bash
-brew install bamgate/tap/bamgate
+curl -fsSL https://raw.githubusercontent.com/bamgate/bamgate/main/install.sh | sh
 ```
 
-**Linux only:** Homebrew installs to a non-standard prefix that `sudo` can't find.
-Create a symlink so `sudo bamgate` works:
+This installs the `bamgate` binary to `/usr/local/bin`. Sudo is requested automatically if needed.
+
+To install a specific version:
 
 ```bash
-sudo ln -sf $(which bamgate) /usr/local/bin/bamgate
+BAMGATE_VERSION=0.5.0 curl -fsSL https://raw.githubusercontent.com/bamgate/bamgate/main/install.sh | sh
 ```
-
-This only needs to be done once and survives `brew upgrade`.
-
-### Download binary
-
-Pre-built binaries for Linux and macOS (amd64 + arm64) are available on the [releases page](https://github.com/bamgate/bamgate/releases).
 
 ### Build from source
 
 ```bash
 go build -o bamgate ./cmd/bamgate
+sudo cp bamgate /usr/local/bin/
 ```
 
 ## Quick start
@@ -64,7 +60,7 @@ This walks you through deploying the signaling server, generating WireGuard keys
 On the first device, generate an invite code:
 
 ```bash
-bamgate invite
+sudo bamgate invite
 ```
 
 On the new device, run setup with the invite code:
@@ -75,26 +71,35 @@ sudo bamgate setup
 
 ### Connect
 
-On Linux, `setup` grants network capabilities so you can run without sudo:
-
 ```bash
-bamgate up             # foreground
-bamgate up -d          # daemon mode (systemd)
+sudo bamgate up             # foreground
+sudo bamgate up -d          # daemon mode (systemd on Linux, launchd on macOS)
 ```
-
-On macOS, root is always required:
-
-```bash
-sudo bamgate up
-```
-
-**Note:** After `brew upgrade bamgate`, re-run `sudo bamgate setup` to restore
-network capabilities (Linux) or update the systemd service path.
 
 Check status:
 
 ```bash
 bamgate status
+```
+
+Stop the daemon:
+
+```bash
+sudo bamgate down
+```
+
+### Upgrade
+
+```bash
+sudo bamgate update
+```
+
+Or re-run the install script.
+
+### Uninstall
+
+```bash
+sudo bamgate uninstall
 ```
 
 ## Goals

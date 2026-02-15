@@ -56,20 +56,4 @@ changelog:
       - "^test:"
       - "^ci:"
 
-homebrew_casks:
-  - ids:
-      - bamgate
-    repository:
-      owner: bamgate
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: "https://github.com/bamgate/bamgate"
-    description: "WireGuard VPN tunnel over WebRTC"
-    binaries:
-      - bamgate
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/bamgate"]
-          end
+

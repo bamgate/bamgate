@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">bamgate</string>
+    <string name="vpn_notification_channel">VPN Status</string>
+    <string name="vpn_notification_title">bamgate VPN</string>
+    <string name="vpn_notification_connected">Connected</string>
+    <string name="vpn_notification_connecting">Connecting…</string>
+    <string name="vpn_notification_disconnected">Disconnected</string>
+</resources>

@@ -15,6 +15,7 @@ const (
 // DefaultTUNName is defined per-platform:
 //   - Linux: "bamgate0" (in tun_linux.go)
 //   - macOS: "utun" (in tun_darwin.go) — kernel auto-assigns next available utun
+//   - Android: "tun0" (in tun_android.go) — not used, VpnService names the interface
 
 // CreateTUN creates a kernel TUN device with the given name and MTU.
 // On Linux, requires CAP_NET_ADMIN. On macOS, requires root privileges.
@@ -33,3 +34,7 @@ func CreateTUN(name string, mtu int) (tun.Device, error) {
 
 	return dev, nil
 }
+
+// CreateTUNFromFD is defined per-platform:
+//   - Android: tun_android.go (uses CreateUnmonitoredTUNFromFD)
+//   - Linux: tun_linux.go (uses CreateTUNFromFile)

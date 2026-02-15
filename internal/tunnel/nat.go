@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && !android
 
 package tunnel
 
@@ -153,6 +153,32 @@ func (n *NATManager) SetupMasquerade(wgSubnet string, outIface string) error {
 	)
 
 	return nil
+}
+
+// TableExists checks if the bamgate nftables table still exists.
+// This is used by the forwarding watchdog to detect if external processes
+// (e.g., a firewall manager) have flushed our rules.
+func (n *NATManager) TableExists() bool {
+	c := n.conn
+	if c == nil {
+		var err error
+		c, err = nftables.New()
+		if err != nil {
+			return false
+		}
+	}
+
+	tables, err := c.ListTables()
+	if err != nil {
+		return false
+	}
+
+	for _, t := range tables {
+		if t.Name == nftTableName && t.Family == nftables.TableFamilyIPv4 {
+			return true
+		}
+	}
+	return false
 }
 
 // Cleanup removes the bamgate nftables table and all its rules.

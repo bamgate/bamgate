@@ -18,6 +18,10 @@ type ICEConfig struct {
 	// TURNServers is a list of TURN server configurations.
 	// Empty until Phase 4 (TURN relay on Cloudflare Workers).
 	TURNServers []TURNServer
+
+	// ForceRelay forces the ICE transport policy to "relay", meaning only
+	// TURN relay candidates are used. Useful for testing the TURN path.
+	ForceRelay bool
 }
 
 // TURNServer describes a single TURN server with credentials.

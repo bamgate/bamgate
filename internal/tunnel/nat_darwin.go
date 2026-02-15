@@ -83,6 +83,18 @@ func (n *NATManager) SetupMasquerade(wgSubnet string, outIface string) error {
 	return nil
 }
 
+// TableExists checks if the bamgate PF anchor still has rules loaded.
+// This is used by the forwarding watchdog to detect if rules were flushed.
+func (n *NATManager) TableExists() bool {
+	cmd := exec.Command("pfctl", "-a", pfAnchorName, "-s", "nat")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	// If there are no rules, pfctl prints nothing or just whitespace.
+	return len(strings.TrimSpace(string(out))) > 0
+}
+
 // Cleanup removes all PF rules loaded by bamgate.
 // This is safe to call even if SetupMasquerade was never called.
 func (n *NATManager) Cleanup() error {

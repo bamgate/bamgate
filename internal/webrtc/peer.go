@@ -69,6 +69,10 @@ func NewPeer(cfg PeerConfig) (*Peer, error) {
 	rtcConfig := webrtc.Configuration{
 		ICEServers: cfg.ICE.pionICEServers(),
 	}
+	if cfg.ICE.ForceRelay {
+		rtcConfig.ICETransportPolicy = webrtc.ICETransportPolicyRelay
+		log.Info("ICE transport policy set to relay-only (force_relay enabled)")
+	}
 
 	var (
 		pc  *webrtc.PeerConnection

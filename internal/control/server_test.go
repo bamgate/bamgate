@@ -35,7 +35,11 @@ func TestServer_StartStopFetchStatus(t *testing.T) {
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	defer srv.Stop()
+	defer func() {
+		if err := srv.Stop(); err != nil {
+			t.Errorf("Stop() error: %v", err)
+		}
+	}()
 
 	// Fetch status.
 	status, err := FetchStatus(socketPath)

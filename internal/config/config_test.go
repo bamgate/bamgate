@@ -227,24 +227,36 @@ func TestConfig_PublicKey_noPrivateKey(t *testing.T) {
 }
 
 func TestDefaultConfigPath(t *testing.T) {
-	// Cannot use t.Parallel() with t.Setenv.
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/test-xdg")
+	t.Parallel()
 	path, err := DefaultConfigPath()
 	if err != nil {
 		t.Fatalf("DefaultConfigPath() error: %v", err)
 	}
-	want := "/tmp/test-xdg/bamgate/config.toml"
+	want := "/etc/bamgate/config.toml"
 	if path != want {
 		t.Errorf("DefaultConfigPath() = %q, want %q", path, want)
 	}
 }
 
-func TestDefaultConfigPath_fallback(t *testing.T) {
+func TestLegacyConfigPath(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/test-xdg")
+	path, err := LegacyConfigPath()
+	if err != nil {
+		t.Fatalf("LegacyConfigPath() error: %v", err)
+	}
+	want := "/tmp/test-xdg/bamgate/config.toml"
+	if path != want {
+		t.Errorf("LegacyConfigPath() = %q, want %q", path, want)
+	}
+}
+
+func TestLegacyConfigPath_fallback(t *testing.T) {
 	// Cannot use t.Parallel() with t.Setenv.
 	t.Setenv("XDG_CONFIG_HOME", "")
-	path, err := DefaultConfigPath()
+	path, err := LegacyConfigPath()
 	if err != nil {
-		t.Fatalf("DefaultConfigPath() error: %v", err)
+		t.Fatalf("LegacyConfigPath() error: %v", err)
 	}
 
 	home, err := os.UserHomeDir()
@@ -253,7 +265,16 @@ func TestDefaultConfigPath_fallback(t *testing.T) {
 	}
 	want := filepath.Join(home, ".config", "bamgate", "config.toml")
 	if path != want {
-		t.Errorf("DefaultConfigPath() = %q, want %q", path, want)
+		t.Errorf("LegacyConfigPath() = %q, want %q", path, want)
+	}
+}
+
+func TestLegacyConfigPathForUser(t *testing.T) {
+	t.Parallel()
+	path := LegacyConfigPathForUser("/home/testuser")
+	want := "/home/testuser/.config/bamgate/config.toml"
+	if path != want {
+		t.Errorf("LegacyConfigPathForUser() = %q, want %q", path, want)
 	}
 }
 

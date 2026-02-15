@@ -18,3 +18,10 @@ Thumbs.db
 # Config and keys (contain secrets)
 config.toml
 *.key
+
+# Android
+android/app/libs/*.aar
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties

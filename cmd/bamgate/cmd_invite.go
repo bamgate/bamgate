@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	qrcode "github.com/skip2/go-qrcode"
 	"github.com/spf13/cobra"
 )
 
@@ -90,7 +91,19 @@ func runInvite(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  Server:      %s\n", baseURL)
 	}
 	fmt.Fprintf(os.Stderr, "  Expires in:  %d minutes\n", result.ExpiresIn/60)
-	fmt.Fprintf(os.Stderr, "\nOn the new device, run:\n")
+
+	// Build the invite URL for QR code scanning (mobile app).
+	u, _ := url.Parse(baseURL)
+	inviteDeepLink := fmt.Sprintf("bamgate://invite?server=%s&code=%s", u.Host, result.Code)
+
+	// Display QR code in terminal for the mobile app.
+	qr, err := qrcode.New(inviteDeepLink, qrcode.Medium)
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "\nScan with the bamgate app:\n\n")
+		fmt.Fprint(os.Stderr, qr.ToSmallString(false))
+	}
+
+	fmt.Fprintf(os.Stderr, "\nFor CLI devices, run:\n")
 	fmt.Fprintf(os.Stderr, "  sudo bamgate setup\n\n")
 	fmt.Fprintf(os.Stderr, "When prompted, enter the invite code")
 	if workerName != "" && subdomain != "" {
