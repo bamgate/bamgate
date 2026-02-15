@@ -22,8 +22,9 @@ type WSProxyDialer struct {
 	// TURNEndpoint is the WebSocket URL for the TURN relay (e.g. "wss://worker.workers.dev/turn").
 	TURNEndpoint string
 
-	// AuthToken is the bearer token for authenticating the WebSocket upgrade.
-	AuthToken string
+	// TokenProvider returns the current bearer token for authenticating the
+	// WebSocket upgrade. Called on each dial attempt so it can return a fresh JWT.
+	TokenProvider func() string
 }
 
 // Dial implements proxy.Dialer. The network and addr parameters come from pion/ice's
@@ -32,11 +33,18 @@ type WSProxyDialer struct {
 func (d *WSProxyDialer) Dial(network, addr string) (net.Conn, error) {
 	ctx := context.Background()
 
-	wsConn, _, err := websocket.Dial(ctx, d.TURNEndpoint, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Authorization": []string{"Bearer " + d.AuthToken},
-		},
-	})
+	var dialOpts *websocket.DialOptions
+	if d.TokenProvider != nil {
+		if token := d.TokenProvider(); token != "" {
+			dialOpts = &websocket.DialOptions{
+				HTTPHeader: http.Header{
+					"Authorization": []string{"Bearer " + token},
+				},
+			}
+		}
+	}
+
+	wsConn, _, err := websocket.Dial(ctx, d.TURNEndpoint, dialOpts)
 	if err != nil {
 		return nil, fmt.Errorf("dialing TURN WebSocket %s: %w", d.TURNEndpoint, err)
 	}

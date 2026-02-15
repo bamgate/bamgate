@@ -18,16 +18,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kuuji/bamgate/internal/agent"
+	"github.com/kuuji/bamgate/internal/auth"
 	"github.com/kuuji/bamgate/internal/config"
 )
 
@@ -85,8 +84,11 @@ func NewTunnel(configTOML string) (*Tunnel, error) {
 	if cfg.Network.ServerURL == "" {
 		return nil, fmt.Errorf("network.server_url is required")
 	}
-	if cfg.Network.AuthToken == "" {
-		return nil, fmt.Errorf("network.auth_token is required")
+	if cfg.Network.DeviceID == "" {
+		return nil, fmt.Errorf("network.device_id is required")
+	}
+	if cfg.Network.RefreshToken == "" {
+		return nil, fmt.Errorf("network.refresh_token is required")
 	}
 	if cfg.Device.PrivateKey.IsZero() {
 		return nil, fmt.Errorf("device.private_key is required")
@@ -266,8 +268,11 @@ func (t *Tunnel) UpdateConfig(tomlStr string) (string, error) {
 	if newCfg.Network.ServerURL == "" {
 		return "", fmt.Errorf("network.server_url is required")
 	}
-	if newCfg.Network.AuthToken == "" {
-		return "", fmt.Errorf("network.auth_token is required")
+	if newCfg.Network.DeviceID == "" {
+		return "", fmt.Errorf("network.device_id is required")
+	}
+	if newCfg.Network.RefreshToken == "" {
+		return "", fmt.Errorf("network.refresh_token is required")
 	}
 	if newCfg.Device.PrivateKey.IsZero() {
 		return "", fmt.Errorf("device.private_key is required")
@@ -286,11 +291,11 @@ func (t *Tunnel) UpdateConfig(tomlStr string) (string, error) {
 	return canonical, nil
 }
 
-// --- Invite redemption (called before tunnel is created) ---
+// --- Device registration (called before tunnel is created) ---
 
-// InviteResult holds the result of redeeming an invite code.
+// RegisterResult holds the result of registering a device via GitHub OAuth.
 // gomobile can export structs with exported fields of basic types.
-type InviteResult struct {
+type RegisterResult struct {
 	// ConfigTOML is the complete TOML config string ready to save and use.
 	ConfigTOML string
 
@@ -301,68 +306,37 @@ type InviteResult struct {
 	DeviceName string
 }
 
-// RedeemInvite redeems an invite code from a bamgate signaling server and
-// returns a complete TOML config string. The Android app should save this
-// config and use it to create a Tunnel.
+// RegisterDevice registers a new device with a bamgate signaling server using
+// a GitHub access token. The Android app handles the GitHub OAuth Device Auth
+// flow in Kotlin and passes the resulting token here.
 //
 // Parameters:
 //   - serverHost: the workers.dev hostname (e.g. "bamgate.ag94441.workers.dev")
-//   - code: the invite code (e.g. "a1b2c3d4")
+//   - githubToken: transient GitHub access token from Device Auth flow
 //   - deviceName: name for this device (e.g. "pixel-phone")
-func RedeemInvite(serverHost, code, deviceName string) (*InviteResult, error) {
+func RegisterDevice(serverHost, githubToken, deviceName string) (*RegisterResult, error) {
 	if serverHost == "" {
 		return nil, fmt.Errorf("server host is required")
 	}
-	if code == "" {
-		return nil, fmt.Errorf("invite code is required")
+	if githubToken == "" {
+		return nil, fmt.Errorf("GitHub token is required")
 	}
 	if deviceName == "" {
 		return nil, fmt.Errorf("device name is required")
 	}
 
-	// Build the redeem URL.
-	baseURL := "https://" + serverHost
-	redeemURL := fmt.Sprintf("%s/invite/%s", baseURL, code)
+	serverURL := "https://" + serverHost
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, redeemURL, nil)
+	resp, err := auth.Register(ctx, serverURL, githubToken, deviceName)
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("redeeming invite: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
-			return nil, fmt.Errorf("invite failed: %s", errResp.Error)
-		}
-		return nil, fmt.Errorf("invite failed: HTTP %d", resp.StatusCode)
-	}
-
-	var invite struct {
-		ServerURL  string `json:"server_url"`
-		AuthToken  string `json:"auth_token"`
-		TURNSecret string `json:"turn_secret"`
-		Address    string `json:"address"`
-	}
-	if err := json.Unmarshal(body, &invite); err != nil {
-		return nil, fmt.Errorf("parsing invite response: %w", err)
+		return nil, fmt.Errorf("registering device: %w", err)
 	}
 
 	// Normalize the server URL to WSS for signaling.
-	wsURL, err := normalizeServerURL(invite.ServerURL + "/connect")
+	wsURL, err := normalizeServerURL(resp.ServerURL + "/connect")
 	if err != nil {
 		return nil, fmt.Errorf("normalizing server URL: %w", err)
 	}
@@ -376,11 +350,12 @@ func RedeemInvite(serverHost, code, deviceName string) (*InviteResult, error) {
 	// Build the config.
 	cfg := config.DefaultConfig()
 	cfg.Network.ServerURL = wsURL
-	cfg.Network.AuthToken = invite.AuthToken
-	cfg.Network.TURNSecret = invite.TURNSecret
+	cfg.Network.TURNSecret = resp.TURNSecret
+	cfg.Network.DeviceID = resp.DeviceID
+	cfg.Network.RefreshToken = resp.RefreshToken
 	cfg.Device.Name = deviceName
 	cfg.Device.PrivateKey = privateKey
-	cfg.Device.Address = invite.Address
+	cfg.Device.Address = resp.Address
 	cfg.Device.AcceptRoutes = true // Android devices typically want to access home LAN subnets
 
 	// Serialize to TOML.
@@ -389,9 +364,9 @@ func RedeemInvite(serverHost, code, deviceName string) (*InviteResult, error) {
 		return nil, fmt.Errorf("serializing config: %w", err)
 	}
 
-	return &InviteResult{
+	return &RegisterResult{
 		ConfigTOML:    tomlStr,
-		TunnelAddress: invite.Address,
+		TunnelAddress: resp.Address,
 		DeviceName:    deviceName,
 	}, nil
 }

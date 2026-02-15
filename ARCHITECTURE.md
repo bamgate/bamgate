@@ -180,18 +180,23 @@ We build a simplified TURN relay rather than running a full `coturn` server. Thi
 **Language**: Go (compiled to WebAssembly via TinyGo)
 
 **Responsibilities:**
-- Authenticate incoming connections (validate auth token)
-- Upgrade to WebSocket and route to the correct Durable Object
+- Authenticate users via GitHub OAuth Device Authorization Grant
+- Register devices with auto-assigned tunnel addresses
+- Issue and validate JWT access tokens (HMAC-SHA256, signed in JS via Web Crypto API)
+- Manage refresh token rotation (30-day rolling window)
+- Upgrade authenticated WebSocket connections and route to the correct Durable Object
 - Generate temporary TURN credentials for authenticated peers
-- Serve TURN endpoint (the Durable Object acts as the TURN server)
-- Status/health endpoint
+- Serve TURN relay endpoint (the Durable Object acts as the TURN server)
+- Device management (list, revoke)
 
 **Endpoints:**
 ```
-POST   /auth              — Validate token, return session + TURN credentials
-GET    /connect           — WebSocket upgrade → routed to Durable Object
-GET    /turn              — TURN-over-WebSocket endpoint → routed to Durable Object
-GET    /status            — Health check + connected peer count
+POST   /auth/register     — Exchange GitHub token for device credentials + refresh token
+POST   /auth/refresh      — Exchange refresh token for new JWT + rotated refresh token
+GET    /auth/devices      — List registered devices (JWT required)
+DELETE /auth/devices/:id  — Revoke a device (JWT required)
+GET    /connect           — WebSocket upgrade → routed to Durable Object (JWT required)
+GET    /turn              — TURN-over-WebSocket endpoint → routed to Durable Object (JWT required)
 ```
 
 **TURN credential generation:**
@@ -326,48 +331,47 @@ WireGuard TUN interface ←→ Bridge ←→ WebRTC Data Channel ←→ Remote P
 **Commands:**
 ```bash
 # First-time setup
-# - Prompts for Cloudflare API token
-# - Deploys Worker + Durable Object to user's CF account via Wrangler/API
-# - Generates network auth token and TURN shared secret
-# - Generates WireGuard key pair for this device
-# - Writes config to ~/.config/bamgate/config.toml
-bamgate init
+# - Authenticates via GitHub Device Authorization Grant
+# - For network owner: prompts for Cloudflare API token, deploys Worker
+# - For joining device: authenticates with existing Worker URL
+# - Registers device, receives JWT + refresh token + tunnel address
+# - Generates WireGuard key pair
+# - Writes config to /etc/bamgate/config.toml
+sudo bamgate setup
 
 # Connect to the network
+# - Refreshes JWT via refresh token
 # - Starts WireGuard interface
-# - Connects to signaling server
+# - Connects to signaling server (JWT in Authorization header)
 # - Establishes WebRTC connections to online peers
 # - Bridges TUN ←→ data channels
-bamgate up
+# - Background JWT refresh loop (every 50 min)
+sudo bamgate up
 
 # Disconnect
-bamgate down
+sudo bamgate down
 
 # Show connection status
-# - Lists connected peers
-# - Shows direct vs relayed per peer
-# - Shows ICE candidate type in use (host/srflx/relay)
-# - Shows latency per peer
 bamgate status
 
 # Device management
-bamgate device add <name>     # Generate join token/QR for a new device
-bamgate device list           # List authorized devices
-bamgate device remove <name>  # Revoke a device
+bamgate devices list           # List all registered devices
+bamgate devices revoke <id>    # Revoke a device (prevents JWT refresh)
 ```
 
-**Config file** (`~/.config/bamgate/config.toml`):
+**Config file** (`/etc/bamgate/config.toml`):
 ```toml
 [network]
 name = "my-network"
-server_url = "https://bamgate-<id>.workers.dev"
-auth_token = "generated-during-init"
-turn_secret = "generated-during-init"
+server_url = "wss://bamgate-<id>.workers.dev/connect"
+turn_secret = "bg_..."        # Auto-assigned by server during registration
+device_id = "uuid-..."        # Assigned by server during registration
+refresh_token = "hex-..."     # Rolling 30-day token, rotated on every refresh
 
 [device]
 name = "home-server"
 private_key = "base64..."
-address = "10.0.0.1/24"
+address = "10.0.0.1/24"       # Auto-assigned by server
 
 [stun]
 servers = [
@@ -376,12 +380,8 @@ servers = [
 ]
 
 [webrtc]
-# Data channel config
 ordered = false
 max_retransmits = 0
-
-[peers]
-# Auto-populated and synced from signaling server
 ```
 
 ### Component 5: Android App
@@ -533,12 +533,15 @@ WebRTC data channels are encrypted via DTLS. WireGuard adds its own encryption. 
 
 ## Security Considerations
 
-- **Auth tokens**: Generated during `init`, stored in config file. Used to authenticate with the CF Worker. Should be treated like a password.
-- **TURN credentials**: Time-limited (24hr), derived from a shared secret via HMAC. Regenerated on each connection.
+- **Authentication**: GitHub OAuth Device Authorization Grant (RFC 8628). Users authenticate via GitHub — no shared secrets or invite tokens. The Worker verifies the GitHub token, registers the device, and mints a refresh token.
+- **Token hierarchy**: GitHub access token (transient, used only during registration) → Refresh token (30-day rolling, stored in config.toml, rotated on every use) → JWT access token (1-hour lifetime, HMAC-SHA256 signed by Worker, kept in memory only).
+- **JWT signing**: HMAC-SHA256 via Web Crypto API (`SubtleCrypto`) in the Worker JS shim. Signing keys are stored in DO SQLite (`signing_keys` table) with `kid` rotation support from day one.
+- **TURN credentials**: Time-limited (24hr), derived from a shared secret via HMAC. The TURN secret is auto-generated on first registration and stored in DO SQLite (not as an environment binding).
 - **WireGuard keys**: Standard Curve25519 key pairs. Private key never leaves the device.
-- **Signaling security**: All signaling goes through HTTPS/WSS to Cloudflare. The Worker validates auth before allowing signaling.
+- **Signaling security**: All signaling goes through HTTPS/WSS to Cloudflare. The Worker validates the JWT before allowing WebSocket upgrade.
 - **Relay security**: The TURN relay (Durable Object) only sees DTLS-encrypted WebRTC packets, which themselves contain WireGuard-encrypted packets. Two layers of encryption that the relay cannot decrypt.
 - **No public IP exposure**: Home server only makes outbound connections. No ports forwarded, no DDNS needed.
+- **Device revocation**: Owners can revoke any of their devices via `bamgate devices revoke <id>` or the `/auth/devices/:id` DELETE endpoint. Revoked devices cannot refresh their JWT.
 
 ## References
 

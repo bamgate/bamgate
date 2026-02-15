@@ -48,6 +48,11 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return runUpDaemon()
 	}
 
+	// Migrate from monolithic config.toml to split config.toml + secrets.toml.
+	if err := config.MigrateConfigSplit(resolvedConfigPath()); err != nil {
+		globalLogger.Warn("config split migration failed", "error", err)
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -66,7 +71,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	a := agent.New(cfg, globalLogger)
+	a := agent.New(cfg, globalLogger, agent.WithConfigPath(resolvedConfigPath()))
 
 	globalLogger.Info("starting bamgate", "config", resolvedConfigPath())
 

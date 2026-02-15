@@ -182,7 +182,7 @@ fun SettingsScreen(
             }
 
             Text(
-                text = "Removes all configuration and returns to the setup screen. You will need to scan a new invite QR code.",
+                text = "Removes all configuration and returns to the setup screen. You will need to sign in with GitHub again.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
@@ -205,7 +205,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showResetDialog = false },
             title = { Text("Reset Configuration?") },
-            text = { Text("This will remove your device configuration. You will need to scan a new invite QR code to reconnect.") },
+            text = { Text("This will remove your device configuration. You will need to sign in with GitHub again to reconnect.") },
             confirmButton = {
                 TextButton(
                     onClick = {

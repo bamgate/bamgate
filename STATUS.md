@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-15 (session 15)
+Last updated: 2026-02-15 (session 17)
 
 ## Current Phase
 
@@ -11,6 +11,7 @@ Last updated: 2026-02-15 (session 15)
 **Phase 5: CLI Polish & Resilience** — Complete
 **Phase 5.5: UX & Operational Improvements** — Complete
 **Phase 6: Automated Setup & Deployment** — Complete
+**Phase 7: GitHub OAuth Authentication** — Complete (replaced shared AUTH_TOKEN with GitHub OAuth + JWT)
 
 See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 
@@ -23,18 +24,19 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 | Signaling hub | `internal/signaling/hub.go` | Reusable `http.Handler` for tests + `bamgate-hub` |
 | WebRTC peer connection | `internal/webrtc/` | ICE, unreliable/unordered data channels, SDP exchange |
 | WireGuard keys | `internal/config/keys.go` | Curve25519, RFC 7748 clamping, base64 + TOML round-trip |
-| TOML config | `internal/config/config.go` | Load/save, XDG paths, 0600 perms, `[cloudflare]` section |
+| TOML config | `internal/config/config.go` | Load/save, XDG paths, split config.toml (0644) + secrets.toml (0640), `[cloudflare]` section |
 | WireGuard TUN + device | `internal/tunnel/` | TUN creation, UAPI config, device lifecycle, custom Bind |
 | Bridge (TUN <-> WebRTC) | `internal/bridge/` | Custom `conn.Bind` routing packets over data channels |
 | Agent orchestrator | `internal/agent/` | Peer lifecycle, ICE restart (3 retries), NAT/forwarding, watchdog |
-| CLI (Cobra) | `cmd/bamgate/` | `setup`, `up`, `down`, `invite`, `status`, `genkey`, `update`, `uninstall` |
+| CLI (Cobra) | `cmd/bamgate/` | `setup`, `up`, `down`, `devices`, `status`, `genkey`, `update`, `uninstall` |
 | Standalone hub | `cmd/bamgate-hub/` | Lightweight signaling server for LAN testing |
 | Control server | `internal/control/` | Unix socket JSON status API, smart path resolution |
 | Subnet routing | config + protocol + agent | `[device] routes`, propagated via signaling, AllowedIPs per peer |
 | `--accept-routes` | config + agent + CLI | Opt-in for remote subnet routes (prevents LAN overlap conflicts) |
 | IP forwarding + NAT | `internal/tunnel/` | Netlink forwarding + nftables MASQUERADE, auto-detected interface |
 | Cloudflare Worker | `worker/` | Go/Wasm DO: signaling hub, WebSocket Hibernation, bearer auth, rehydration |
-| Worker invite system | `worker/src/worker.mjs` | `/invite` + `/network-info` endpoints, DO SQLite, auto IP assignment |
+| GitHub OAuth + JWT auth | `worker/src/worker.mjs`, `internal/auth/` | GitHub Device Auth flow, JWT access tokens, refresh token rotation, device registration |
+| Device management CLI | `cmd/bamgate/cmd_devices.go` | `bamgate devices list`, `bamgate devices revoke` |
 | TURN relay | `worker/turn.go`, `internal/turn/` | TURN-over-WebSocket for symmetric NAT, HMAC-SHA1 credentials |
 | STUN parser | `worker/stun/` | Minimal TinyGo-compatible STUN/TURN message codec (~500 lines) |
 | Embedded worker assets | `internal/deploy/assets.go` | `//go:embed` worker.mjs + app.wasm + wasm_exec.js |
@@ -46,7 +48,7 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 | macOS support | `internal/tunnel/*_darwin.go` | See [docs/macos-status.md](docs/macos-status.md) |
 | Android app | `mobile/`, `android/` | See [docs/android-status.md](docs/android-status.md) |
 | Android CI | `.github/workflows/release.yml` | gomobile AAR -> Gradle APK, uploaded to GitHub release |
-| QR invite codes | `cmd/bamgate/cmd_invite.go` | Terminal QR via `skip2/go-qrcode`, `bamgate://invite` URL scheme |
+| ~~QR invite codes~~ | ~~`cmd/bamgate/cmd_invite.go`~~ | ~~Removed — replaced by GitHub OAuth Device Auth flow~~ |
 | Install script + self-update | `install.sh`, `cmd_update.go` | `curl\|sh` install, `bamgate update` self-update |
 | Vendored anet | `third_party/anet/` | Patched `wlynxg/anet` for Android pion/transport compat |
 
@@ -54,12 +56,12 @@ See [IDEAS.md](IDEAS.md) for the backlog of future work, code health improvement
 
 ## What's Next
 
-1. **Deploy and test TURN relay** — Redeploy the Cloudflare Worker with TURN support, set `TURN_SECRET`, and test end-to-end with phone tethering (symmetric NAT). Verify `bamgate status` shows `ice_type: relay`.
-2. **macOS support — launchd integration** — `up -d`, `down`, and `install --systemd` equivalents for macOS using launchd plists. See [docs/macos-status.md](docs/macos-status.md).
-3. **Rate limiting** — Add request rate limiting to the Worker `/connect` and `/turn` endpoints to prevent abuse.
-4. **Android client** — Phase A+B complete, needs device testing. See [docs/android-status.md](docs/android-status.md).
-5. **End-to-end testing with systemd** — Verify the full `install --systemd` -> `up -d` -> `status` -> `down` workflow on a fresh machine.
-6. **macOS end-to-end testing** — Test `sudo bamgate setup` -> `sudo bamgate up` -> `bamgate status` on a real Mac.
+1. **Deploy and test OAuth flow end-to-end** — Redeploy the Worker with the new OAuth/JWT auth, run `bamgate setup` to register via GitHub, verify signaling and TURN relay work with JWT auth.
+2. **Deploy and test TURN relay** — Test end-to-end with phone tethering (symmetric NAT). Verify `bamgate status` shows `ice_type: relay`. TURN secret is now auto-generated in DO SQLite (no env binding needed).
+3. **macOS support — launchd integration** — `up -d`, `down`, and `install --systemd` equivalents for macOS using launchd plists. See [docs/macos-status.md](docs/macos-status.md).
+4. **Rate limiting** — Add request rate limiting to the Worker `/connect` and `/turn` endpoints to prevent abuse.
+5. **Android client** — Phase A+B complete. `mobile/bamgate.go` updated with `RegisterDevice` using the new auth package. Needs device testing. See [docs/android-status.md](docs/android-status.md).
+6. **End-to-end testing with systemd** — Verify the full `install --systemd` -> `up -d` -> `status` -> `down` workflow on a fresh machine.
 
 ## Testing
 
@@ -72,19 +74,20 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Package | Files | Status |
 |---------|-------|--------|
-| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_setup.go, cmd_invite.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go | **Implemented + tested** — Cobra subcommands: setup, up, down, invite, status, genkey, update, uninstall |
+| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_setup.go, cmd_devices.go, cmd_qr.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go | **Implemented + tested** — Cobra subcommands: setup (GitHub OAuth), up, down, devices (list/revoke), qr, status, genkey, update, uninstall |
 | `cmd/bamgate-hub` | main.go | **Implemented** — standalone signaling server |
-| `internal/agent` | agent.go, agent_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection |
+| `internal/agent` | agent.go, agent_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection, JWT refresh loop |
+| `internal/auth` | github.go, tokens.go | **Implemented** — GitHub Device Auth flow (RFC 8628), register/refresh/list/revoke API client |
 | `internal/control` | server.go, server_test.go | **Implemented + tested** — Unix socket status API |
 | `internal/bridge` | bridge.go, bridge_test.go | **Implemented + tested** |
-| `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** |
+| `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** — Split config.toml (0644) + secrets.toml (0640) for non-root CLI access |
 | `internal/signaling` | client.go, hub.go, client_test.go | **Implemented + tested** |
 | `pkg/protocol` | protocol.go, protocol_test.go | **Implemented + tested** |
 | `internal/tunnel` | config.go, device.go, tun.go, tun_linux.go, tun_darwin.go, tun_android.go, iface.go, netlink.go, netlink_darwin.go, netlink_android.go, nat.go, nat_darwin.go, nat_android.go, config_test.go, netlink_test.go | **Implemented + tested** — Cross-platform: Linux (netlink + nftables), macOS (ifconfig/route/pfctl), Android (VpnService FD, no-op stubs) |
 | `internal/turn` | credentials.go, credentials_test.go, dialer.go, dialer_test.go | **Implemented + tested** |
 | `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** |
 | `internal/deploy` | cloudflare.go, assets.go, assets/ | **Implemented** — Cloudflare API client, embedded worker assets |
-| `worker/` | hub.go, turn.go, main.go, src/worker.mjs | **Implemented** — TinyGo Wasm, signaling + TURN + invite endpoints |
+| `worker/` | hub.go, turn.go, main.go, src/worker.mjs | **Implemented** — TinyGo Wasm, signaling + TURN + OAuth/JWT auth (register, refresh, devices) |
 | `worker/stun` | stun.go, stun_test.go | **Implemented + tested** — 20 tests |
 | `mobile/` | bamgate.go, tools.go | **Implemented** — gomobile binding layer |
 | `android/` | Gradle project, 9 Kotlin files | **Implemented** — Jetpack Compose app |
@@ -102,7 +105,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 | `github.com/google/nftables` | v0.3.0 | Pure Go nftables for NAT masquerade |
 | `golang.org/x/sys` | v0.41.0 | Netlink syscalls for TUN config, IP forwarding |
 | `github.com/pion/transport/v4` | v4.0.1 | Transport abstractions (Android socket protection) |
-| `github.com/skip2/go-qrcode` | latest | Terminal QR code rendering |
+| `github.com/skip2/go-qrcode` | v0.0.0 | Terminal QR code rendering for `bamgate qr` |
 | `golang.org/x/mobile` | latest | gomobile toolchain for Android AAR |
 | `golang.zx2c4.com/wireguard` | v0.0.0-20250521 | Userspace WireGuard device + TUN interface |
 
@@ -110,6 +113,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.8.0 | 2026-02-15 | GitHub OAuth auth, config split for non-root CLI, `bamgate qr` + `bamgate devices` |
 | v1.7.1 | 2026-02-14 | New logo, Android icon update |
 | v1.7.0 | 2026-02-14 | Show local pushed routes in `bamgate status`, Android APK CI |
 | v1.6.0 | 2026-02-14 | Overhaul install: drop Homebrew, add install script + self-update + root daemon, launchd |
@@ -137,6 +141,9 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 17 | 2026-02-15 | Split config into config.toml (0644) + secrets.toml (0640) so CLI commands work without sudo, `bamgate qr` uses LoadPublicConfig, sudo user gets group read on secrets via SUDO_GID chown, auto-migration of old monolithic config |
+| 16 | 2026-02-15 | GitHub OAuth authentication: replace shared AUTH_TOKEN with GitHub Device Auth + Worker-minted JWTs, device registration/refresh/revoke, `bamgate devices` CLI, mobile bindings update |
+| 15 | 2026-02-15 | (Session context — planning for OAuth transition) |
 | 14 | 2026-02-14 | New ㅂ (bieup) logo in yellow/dark grey, Android adaptive icon update |
 | 13 | 2026-02-14 | Show local pushed routes in `bamgate status` header |
 | 12 | 2026-02-14 | Android APK CI pipeline (gomobile AAR -> Gradle -> GitHub release) |

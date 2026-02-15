@@ -137,8 +137,6 @@ type DeployWorkerInput struct {
 	ScriptName string
 	Modules    []WorkerModule
 	MainModule string // Must match one of the module names.
-	AuthToken  string // The bamgate auth token to set as a plain text binding.
-	TURNSecret string // Shared secret for TURN credential generation/validation.
 
 	// IncludeMigration controls whether the DO migration is included.
 	// Set to true on first deploy, false on re-deploys.
@@ -146,8 +144,8 @@ type DeployWorkerInput struct {
 }
 
 // DeployWorker uploads a worker script with Durable Object bindings and
-// optional migration. The auth token is set as a plain text environment
-// variable binding (not a secret) so it can be read back later.
+// optional migration. Authentication and secrets are managed by the Durable
+// Object internally (GitHub OAuth + JWTs + DO SQLite) — no env var bindings needed.
 func (c *Client) DeployWorker(ctx context.Context, input DeployWorkerInput) error {
 	path := fmt.Sprintf("/accounts/%s/workers/scripts/%s", input.AccountID, input.ScriptName)
 
@@ -161,16 +159,6 @@ func (c *Client) DeployWorker(ctx context.Context, input DeployWorkerInput) erro
 				"type":       "durable_object_namespace",
 				"name":       "SIGNALING_ROOM",
 				"class_name": "SignalingRoom",
-			},
-			{
-				"type": "plain_text",
-				"name": "AUTH_TOKEN",
-				"text": input.AuthToken,
-			},
-			{
-				"type": "plain_text",
-				"name": "TURN_SECRET",
-				"text": input.TURNSecret,
 			},
 		},
 	}
@@ -275,56 +263,6 @@ func (c *Client) EnableWorkerSubdomain(ctx context.Context, accountID, scriptNam
 	}
 
 	return nil
-}
-
-// GetWorkerBindings retrieves the current bindings for a worker script.
-// This is used to read back the AUTH_TOKEN plain text binding.
-func (c *Client) GetWorkerBindings(ctx context.Context, accountID, scriptName string) ([]WorkerBinding, error) {
-	path := fmt.Sprintf("/accounts/%s/workers/scripts/%s/settings", accountID, scriptName)
-
-	var resp struct {
-		Success bool `json:"success"`
-		Result  struct {
-			Bindings []WorkerBinding `json:"bindings"`
-		} `json:"result"`
-	}
-
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return nil, fmt.Errorf("getting worker bindings: %w", err)
-	}
-
-	if !resp.Success {
-		return nil, fmt.Errorf("getting worker bindings: API returned success=false")
-	}
-
-	return resp.Result.Bindings, nil
-}
-
-// WorkerBinding represents a single binding on a Cloudflare Worker.
-type WorkerBinding struct {
-	Type string `json:"type"`
-	Name string `json:"name"`
-	Text string `json:"text,omitempty"` // For plain_text bindings.
-}
-
-// GetAuthTokenFromBindings extracts the AUTH_TOKEN value from worker bindings.
-func GetAuthTokenFromBindings(bindings []WorkerBinding) (string, bool) {
-	for _, b := range bindings {
-		if b.Name == "AUTH_TOKEN" && b.Type == "plain_text" {
-			return b.Text, true
-		}
-	}
-	return "", false
-}
-
-// GetTURNSecretFromBindings extracts the TURN_SECRET value from worker bindings.
-func GetTURNSecretFromBindings(bindings []WorkerBinding) (string, bool) {
-	for _, b := range bindings {
-		if b.Name == "TURN_SECRET" && b.Type == "plain_text" {
-			return b.Text, true
-		}
-	}
-	return "", false
 }
 
 // WorkerURL constructs the full HTTPS URL for a deployed worker.

@@ -14,12 +14,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/pion/webrtc/v4"
 	"golang.zx2c4.com/wireguard/tun"
 
+	"github.com/kuuji/bamgate/internal/auth"
 	"github.com/kuuji/bamgate/internal/bridge"
 	"github.com/kuuji/bamgate/internal/config"
 	"github.com/kuuji/bamgate/internal/control"
@@ -55,6 +57,7 @@ type options struct {
 	tunFD               int             // if > 0, use this FD instead of creating a TUN
 	socketProtector     SocketProtector // optional callback to protect sockets from VPN routing
 	routeUpdateCallback RouteUpdateFunc // optional callback when new peer routes are discovered
+	configPath          string          // path to config file for persisting rotated refresh tokens
 }
 
 // WithTunFD configures the agent to use an existing TUN file descriptor
@@ -82,6 +85,12 @@ func WithRouteUpdateCallback(fn RouteUpdateFunc) Option {
 	return func(o *options) { o.routeUpdateCallback = fn }
 }
 
+// WithConfigPath sets the config file path so the agent can persist rotated
+// refresh tokens after each JWT refresh cycle.
+func WithConfigPath(path string) Option {
+	return func(o *options) { o.configPath = path }
+}
+
 // Agent orchestrates the bamgate VPN tunnel. It connects to the signaling
 // server, establishes WebRTC connections with peers, and bridges WireGuard
 // traffic over data channels.
@@ -105,6 +114,11 @@ type Agent struct {
 	mu             sync.Mutex
 	peers          map[string]*peerState // peerID -> state
 	notifiedRoutes map[string]bool       // routes already sent via RouteUpdateCallback
+
+	// JWT token management.
+	configPath string // path to config file, for persisting rotated refresh tokens
+	tokenMu    sync.RWMutex
+	jwtToken   string // current access JWT
 }
 
 // forwardingSave records the previous forwarding state for an interface so it
@@ -171,6 +185,7 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) *Agent {
 		log:            logger.With("component", "agent"),
 		peers:          make(map[string]*peerState),
 		notifiedRoutes: make(map[string]bool),
+		configPath:     o.configPath,
 	}
 }
 
@@ -246,14 +261,23 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// 6. Connect to signaling server.
 	pubKey := config.PublicKey(a.cfg.Device.PrivateKey)
+	// Perform initial JWT refresh if OAuth credentials are configured.
+	if a.cfg.Network.DeviceID != "" && a.cfg.Network.RefreshToken != "" {
+		if err := a.refreshJWT(ctx); err != nil {
+			return fmt.Errorf("initial token refresh: %w", err)
+		}
+		// Start background JWT refresh loop (~50 min interval).
+		go a.jwtRefreshLoop(ctx)
+	}
+
 	a.sigClient = signaling.NewClient(signaling.ClientConfig{
-		ServerURL: a.cfg.Network.ServerURL,
-		PeerID:    a.cfg.Device.Name,
-		PublicKey: pubKey.String(),
-		Address:   a.cfg.Device.Address,
-		Routes:    a.cfg.Device.Routes,
-		AuthToken: a.cfg.Network.AuthToken,
-		Logger:    a.log,
+		ServerURL:     a.cfg.Network.ServerURL,
+		PeerID:        a.cfg.Device.Name,
+		PublicKey:     pubKey.String(),
+		Address:       a.cfg.Device.Address,
+		Routes:        a.cfg.Device.Routes,
+		TokenProvider: a.tokenProvider,
+		Logger:        a.log,
 		Reconnect: signaling.ReconnectConfig{
 			Enabled: true,
 		},
@@ -596,8 +620,8 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 				// Set up the WebSocket proxy dialer so pion/ice routes
 				// TURN traffic through our Cloudflare Worker.
 				se.SetICEProxyDialer(&turn.WSProxyDialer{
-					TURNEndpoint: turnWSURL,
-					AuthToken:    a.cfg.Network.AuthToken,
+					TURNEndpoint:  turnWSURL,
+					TokenProvider: a.tokenProvider,
 				})
 				needCustomAPI = true
 
@@ -1003,6 +1027,77 @@ func (a *Agent) shutdown() {
 	if a.bind != nil {
 		if err := a.bind.Close(); err != nil {
 			a.log.Error("closing bridge bind", "error", err)
+		}
+	}
+}
+
+// tokenProvider returns the current JWT for use in Authorization headers.
+// It is passed to signaling.ClientConfig and turn.WSProxyDialer.
+func (a *Agent) tokenProvider() string {
+	a.tokenMu.RLock()
+	defer a.tokenMu.RUnlock()
+	return a.jwtToken
+}
+
+// refreshJWT exchanges the current refresh token for a new JWT access token
+// and a rotated refresh token. The new refresh token is persisted to the
+// config file immediately to prevent token loss on crash.
+func (a *Agent) refreshJWT(ctx context.Context) error {
+	// Derive HTTPS base URL from the WSS signaling URL.
+	serverURL := a.cfg.Network.ServerURL
+	serverURL = strings.Replace(serverURL, "wss://", "https://", 1)
+	serverURL = strings.Replace(serverURL, "ws://", "http://", 1)
+	// Strip /connect path.
+	if idx := strings.Index(serverURL, "/connect"); idx != -1 {
+		serverURL = serverURL[:idx]
+	}
+
+	resp, err := auth.Refresh(ctx, serverURL, a.cfg.Network.DeviceID, a.cfg.Network.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("refreshing JWT: %w", err)
+	}
+
+	// Update in-memory state.
+	a.tokenMu.Lock()
+	a.jwtToken = resp.AccessToken
+	a.tokenMu.Unlock()
+
+	// Rotate the refresh token in config.
+	a.cfg.Network.RefreshToken = resp.RefreshToken
+
+	// Persist immediately so we don't lose the rotated token on crash.
+	if a.configPath != "" {
+		if err := config.SaveSecrets(a.configPath, a.cfg); err != nil {
+			a.log.Error("persisting rotated refresh token", "error", err)
+			// Non-fatal — the agent can continue with the in-memory token.
+			// The token will be persisted on the next successful refresh.
+		}
+	}
+
+	a.log.Info("JWT refreshed", "expires_in", resp.ExpiresIn)
+	return nil
+}
+
+// jwtRefreshLoop periodically refreshes the JWT before it expires.
+// It runs until the context is cancelled.
+func (a *Agent) jwtRefreshLoop(ctx context.Context) {
+	// Refresh at 50 minutes (JWT lifetime is 60 minutes).
+	ticker := time.NewTicker(50 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.refreshJWT(ctx); err != nil {
+				a.log.Error("background JWT refresh failed", "error", err)
+				// Try again sooner on failure.
+				time.Sleep(30 * time.Second)
+				if err := a.refreshJWT(ctx); err != nil {
+					a.log.Error("JWT refresh retry failed", "error", err)
+				}
+			}
 		}
 	}
 }

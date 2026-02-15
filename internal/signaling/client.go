@@ -33,9 +33,10 @@ type ClientConfig struct {
 	// this device, advertised to peers via the join message.
 	Routes []string
 
-	// AuthToken is the bearer token for authenticating with the signaling server.
-	// If empty, no Authorization header is sent.
-	AuthToken string
+	// TokenProvider returns the current bearer token for authenticating with
+	// the signaling server. Called on each dial attempt so it can return a
+	// fresh JWT after token refresh. If nil, no Authorization header is sent.
+	TokenProvider func() string
 
 	// Logger is the structured logger to use. If nil, slog.Default() is used.
 	Logger *slog.Logger
@@ -193,11 +194,13 @@ func (c *Client) dial(ctx context.Context) error {
 	defer dialCancel()
 
 	var opts *websocket.DialOptions
-	if c.cfg.AuthToken != "" {
-		opts = &websocket.DialOptions{
-			HTTPHeader: http.Header{
-				"Authorization": []string{"Bearer " + c.cfg.AuthToken},
-			},
+	if c.cfg.TokenProvider != nil {
+		if token := c.cfg.TokenProvider(); token != "" {
+			opts = &websocket.DialOptions{
+				HTTPHeader: http.Header{
+					"Authorization": []string{"Bearer " + token},
+				},
+			}
 		}
 	}
 

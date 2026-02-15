@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -20,6 +21,9 @@ var DefaultSTUNServers = []string{
 
 // DefaultConfigDir is the system-wide config directory for bamgate.
 const DefaultConfigDir = "/etc/bamgate"
+
+// secretsFileName is the name of the secrets file within the config directory.
+const secretsFileName = "secrets.toml"
 
 // Config is the top-level configuration for bamgate.
 // It is persisted as a TOML file at DefaultConfigPath().
@@ -53,11 +57,17 @@ type NetworkConfig struct {
 	// ServerURL is the HTTPS/WSS URL of the Cloudflare Worker signaling server.
 	ServerURL string `toml:"server_url"`
 
-	// AuthToken is the bearer token used to authenticate with the signaling server.
-	AuthToken string `toml:"auth_token"`
-
 	// TURNSecret is the shared secret used to derive time-limited TURN credentials.
+	// Received from the server during device registration.
 	TURNSecret string `toml:"turn_secret"`
+
+	// DeviceID is the unique identifier for this device, assigned by the server
+	// during registration via POST /auth/register.
+	DeviceID string `toml:"device_id"`
+
+	// RefreshToken is the rolling refresh token used to obtain new JWTs.
+	// It is rotated on every POST /auth/refresh call (30-day rolling window).
+	RefreshToken string `toml:"refresh_token"`
 }
 
 // DeviceConfig identifies this device within the network.
@@ -108,6 +118,102 @@ type WebRTCConfig struct {
 	MaxRetransmits int `toml:"max_retransmits"`
 }
 
+// configFile is the TOML representation for config.toml (world-readable, no secrets).
+type configFile struct {
+	Cloudflare cfConfigFile  `toml:"cloudflare"`
+	Network    netConfigFile `toml:"network"`
+	Device     devConfigFile `toml:"device"`
+	STUN       STUNConfig    `toml:"stun"`
+	WebRTC     WebRTCConfig  `toml:"webrtc"`
+}
+
+type cfConfigFile struct {
+	AccountID  string `toml:"account_id,omitempty"`
+	WorkerName string `toml:"worker_name,omitempty"`
+}
+
+type netConfigFile struct {
+	Name      string `toml:"name"`
+	ServerURL string `toml:"server_url"`
+	DeviceID  string `toml:"device_id"`
+}
+
+type devConfigFile struct {
+	Name         string   `toml:"name"`
+	Address      string   `toml:"address"`
+	Routes       []string `toml:"routes,omitempty"`
+	AcceptRoutes bool     `toml:"accept_routes,omitempty"`
+	ForceRelay   bool     `toml:"force_relay,omitempty"`
+}
+
+// secretsFile is the TOML representation for secrets.toml (0640, root + invoking user).
+type secretsFile struct {
+	Cloudflare cfSecretsFile  `toml:"cloudflare"`
+	Network    netSecretsFile `toml:"network"`
+	Device     devSecretsFile `toml:"device"`
+}
+
+type cfSecretsFile struct {
+	APIToken string `toml:"api_token,omitempty"`
+}
+
+type netSecretsFile struct {
+	TURNSecret   string `toml:"turn_secret"`
+	RefreshToken string `toml:"refresh_token"`
+}
+
+type devSecretsFile struct {
+	PrivateKey Key `toml:"private_key"`
+}
+
+// toConfigFile extracts the non-secret fields from a Config for config.toml.
+func toConfigFile(cfg *Config) *configFile {
+	return &configFile{
+		Cloudflare: cfConfigFile{
+			AccountID:  cfg.Cloudflare.AccountID,
+			WorkerName: cfg.Cloudflare.WorkerName,
+		},
+		Network: netConfigFile{
+			Name:      cfg.Network.Name,
+			ServerURL: cfg.Network.ServerURL,
+			DeviceID:  cfg.Network.DeviceID,
+		},
+		Device: devConfigFile{
+			Name:         cfg.Device.Name,
+			Address:      cfg.Device.Address,
+			Routes:       cfg.Device.Routes,
+			AcceptRoutes: cfg.Device.AcceptRoutes,
+			ForceRelay:   cfg.Device.ForceRelay,
+		},
+		STUN:   cfg.STUN,
+		WebRTC: cfg.WebRTC,
+	}
+}
+
+// toSecretsFile extracts the secret fields from a Config for secrets.toml.
+func toSecretsFile(cfg *Config) *secretsFile {
+	return &secretsFile{
+		Cloudflare: cfSecretsFile{
+			APIToken: cfg.Cloudflare.APIToken,
+		},
+		Network: netSecretsFile{
+			TURNSecret:   cfg.Network.TURNSecret,
+			RefreshToken: cfg.Network.RefreshToken,
+		},
+		Device: devSecretsFile{
+			PrivateKey: cfg.Device.PrivateKey,
+		},
+	}
+}
+
+// mergeSecrets overlays secret fields from a secretsFile onto a Config.
+func mergeSecrets(cfg *Config, s *secretsFile) {
+	cfg.Cloudflare.APIToken = s.Cloudflare.APIToken
+	cfg.Network.TURNSecret = s.Network.TURNSecret
+	cfg.Network.RefreshToken = s.Network.RefreshToken
+	cfg.Device.PrivateKey = s.Device.PrivateKey
+}
+
 // DefaultConfig returns a Config populated with sensible defaults.
 // Network-specific fields (name, server_url, auth_token, turn_secret) and
 // device-specific fields (name, private_key, address) are left empty and
@@ -130,6 +236,18 @@ func DefaultConfigPath() (string, error) {
 	return filepath.Join(DefaultConfigDir, "config.toml"), nil
 }
 
+// DefaultSecretsPath returns the default path for the bamgate secrets file.
+// The secrets are stored at /etc/bamgate/secrets.toml with restricted permissions.
+func DefaultSecretsPath() string {
+	return filepath.Join(DefaultConfigDir, secretsFileName)
+}
+
+// SecretsPathFromConfig derives the secrets.toml path from a config.toml path.
+// It replaces the filename, keeping secrets.toml alongside config.toml.
+func SecretsPathFromConfig(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), secretsFileName)
+}
+
 // LegacyConfigPath returns the old user-level config path (~/.config/bamgate/config.toml).
 // This is used for migration detection when upgrading from older versions.
 func LegacyConfigPath() (string, error) {
@@ -150,10 +268,40 @@ func LegacyConfigPathForUser(homeDir string) string {
 	return filepath.Join(homeDir, ".config", "bamgate", "config.toml")
 }
 
-// LoadConfig reads and decodes a TOML config file from the given path.
-// If the file does not exist, it returns an error wrapping fs.ErrNotExist.
-// After loading, defaults are applied for any unset optional fields.
+// LoadConfig reads config.toml and secrets.toml from the config directory,
+// merging them into a single Config. If config.toml does not exist, it returns
+// an error wrapping fs.ErrNotExist. If secrets.toml does not exist, the secret
+// fields are left at their zero values (this supports loading on machines that
+// joined a network but have not yet been fully set up, or for commands that
+// only need non-secret fields).
+//
+// For commands that explicitly do not need secrets (and should work without
+// root), use LoadPublicConfig instead.
 func LoadConfig(path string) (*Config, error) {
+	cfg, err := LoadPublicConfig(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load secrets from the companion file.
+	secretsPath := SecretsPathFromConfig(path)
+	var sec secretsFile
+	if _, err := toml.DecodeFile(secretsPath, &sec); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("reading secrets file %s: %w", secretsPath, err)
+		}
+		// secrets.toml missing — leave secret fields at zero values.
+	} else {
+		mergeSecrets(cfg, &sec)
+	}
+
+	return cfg, nil
+}
+
+// LoadPublicConfig reads only config.toml (the world-readable, non-secret
+// portion of the configuration). Use this for commands that do not need
+// secrets and should work without root (e.g. "bamgate qr").
+func LoadPublicConfig(path string) (*Config, error) {
 	cfg := DefaultConfig()
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -165,24 +313,93 @@ func LoadConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// SaveConfig encodes the config as TOML and writes it to the given path.
-// Parent directories are created if they don't exist. The file is written
-// with mode 0600 (owner-only read/write) since it contains secrets.
+// SaveConfig writes both config.toml (0644, non-secret fields) and
+// secrets.toml (0640, secret fields) to the directory containing path.
+// Parent directories are created with mode 0755 if they don't exist.
+//
+// When running via sudo, secrets.toml is chowned to root:<invoking-user-gid>
+// so the invoking user can read secrets without sudo.
 func SaveConfig(path string, cfg *Config) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating config directory %s: %w", dir, err)
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	// Write config.toml (world-readable — no secrets).
+	if err := writeFile(path, 0644, toConfigFile(cfg)); err != nil {
+		return fmt.Errorf("writing config file: %w", err)
+	}
+
+	// Write secrets.toml (root + group-readable — contains secrets).
+	secretsPath := SecretsPathFromConfig(path)
+	if err := writeFile(secretsPath, 0640, toSecretsFile(cfg)); err != nil {
+		return fmt.Errorf("writing secrets file: %w", err)
+	}
+	applySecretsOwnership(secretsPath)
+
+	return nil
+}
+
+// SaveSecrets writes only the secrets.toml file for the given config path.
+// Use this when only secret fields have changed (e.g. refresh token rotation)
+// and re-writing config.toml is unnecessary.
+func SaveSecrets(configPath string, cfg *Config) error {
+	secretsPath := SecretsPathFromConfig(configPath)
+	if err := writeFile(secretsPath, 0640, toSecretsFile(cfg)); err != nil {
+		return fmt.Errorf("writing secrets file: %w", err)
+	}
+	applySecretsOwnership(secretsPath)
+	return nil
+}
+
+// applySecretsOwnership sets group ownership on secrets.toml so the user who
+// ran sudo can read it without elevation. When running as root via sudo, the
+// SUDO_GID environment variable identifies the invoking user's primary group.
+// The file is chowned to root:<sudo-gid>, and with mode 0640 the invoking user
+// (as a group member) gains read access.
+//
+// This is a best-effort operation — errors are silently ignored because the
+// file is already written successfully and root can always read it.
+func applySecretsOwnership(path string) {
+	// Only relevant when running as root.
+	if os.Getuid() != 0 {
+		return
+	}
+
+	gidStr := os.Getenv("SUDO_GID")
+	if gidStr == "" {
+		return
+	}
+
+	gid, err := strconv.Atoi(gidStr)
 	if err != nil {
-		return fmt.Errorf("creating config file %s: %w", path, err)
+		return
+	}
+
+	// chown root:<sudo-user-gid> secrets.toml
+	// -1 means "don't change" for uid, so we keep root as owner.
+	_ = os.Chown(path, 0, gid)
+}
+
+// writeFile encodes v as TOML and writes it to path with the given file mode.
+// If the file already exists with different permissions (e.g. during migration
+// from the old monolithic 0600 format), the permissions are corrected.
+func writeFile(path string, mode os.FileMode, v interface{}) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("creating file %s: %w", path, err)
 	}
 	defer f.Close()
 
+	// Ensure permissions are correct even if the file already existed
+	// with different permissions (OpenFile only sets mode on creation).
+	if err := f.Chmod(mode); err != nil {
+		return fmt.Errorf("setting permissions on %s: %w", path, err)
+	}
+
 	enc := toml.NewEncoder(f)
-	if err := enc.Encode(cfg); err != nil {
-		return fmt.Errorf("encoding config: %w", err)
+	if err := enc.Encode(v); err != nil {
+		return fmt.Errorf("encoding TOML: %w", err)
 	}
 
 	return nil
@@ -216,6 +433,41 @@ func MarshalTOML(cfg *Config) (string, error) {
 		return "", fmt.Errorf("encoding TOML config: %w", err)
 	}
 	return strings.TrimSpace(buf.String()), nil
+}
+
+// MigrateConfigSplit checks whether the config directory still uses the old
+// monolithic format (secrets embedded in config.toml, no secrets.toml) and
+// migrates to the split format by re-writing both files. This should be called
+// from commands that run as root (setup, up) to handle upgrades transparently.
+//
+// If secrets.toml already exists, this is a no-op.
+func MigrateConfigSplit(configPath string) error {
+	secretsPath := SecretsPathFromConfig(configPath)
+
+	// If secrets.toml already exists, migration is done.
+	if _, err := os.Stat(secretsPath); err == nil {
+		return nil
+	}
+
+	// Load the old monolithic config (which has everything in one file).
+	cfg := DefaultConfig()
+	if _, err := toml.DecodeFile(configPath, cfg); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // No config at all — nothing to migrate.
+		}
+		return fmt.Errorf("reading config for migration: %w", err)
+	}
+	applyDefaults(cfg)
+
+	// Check if there are actually any secrets in the old file. If not,
+	// there's nothing to migrate — this might be a fresh install.
+	if cfg.Device.PrivateKey.IsZero() && cfg.Network.TURNSecret == "" &&
+		cfg.Network.RefreshToken == "" && cfg.Cloudflare.APIToken == "" {
+		return nil
+	}
+
+	// Re-save using the split format.
+	return SaveConfig(configPath, cfg)
 }
 
 // applyDefaults fills in default values for optional fields that are

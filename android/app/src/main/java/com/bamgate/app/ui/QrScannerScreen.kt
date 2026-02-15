@@ -26,6 +26,10 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 
+/**
+ * Full-screen QR code scanner. Scans for any QR code containing text
+ * and returns the raw string value via [onCodeScanned].
+ */
 @Composable
 fun QrScannerScreen(
     onCodeScanned: (String) -> Unit,
@@ -72,13 +76,13 @@ fun QrScannerScreen(
                                 scanner.process(image)
                                     .addOnSuccessListener { barcodes ->
                                         for (barcode in barcodes) {
-                                            if (barcode.valueType == Barcode.TYPE_URL ||
-                                                barcode.valueType == Barcode.TYPE_TEXT
+                                            if (barcode.valueType == Barcode.TYPE_TEXT ||
+                                                barcode.valueType == Barcode.TYPE_URL
                                             ) {
                                                 val value = barcode.rawValue ?: continue
-                                                if (value.startsWith("bamgate://")) {
+                                                if (value.isNotBlank()) {
                                                     hasScanned = true
-                                                    onCodeScanned(value)
+                                                    onCodeScanned(value.trim())
                                                     return@addOnSuccessListener
                                                 }
                                             }
@@ -110,7 +114,6 @@ fun QrScannerScreen(
             }, ContextCompat.getMainExecutor(context))
         }
 
-        // Cancel button
         Button(
             onClick = onCancel,
             modifier = Modifier

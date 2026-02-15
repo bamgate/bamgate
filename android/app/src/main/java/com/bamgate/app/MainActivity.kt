@@ -42,9 +42,6 @@ class MainActivity : ComponentActivity() {
         configRepo = ConfigRepository(this)
         vpnStateMonitor = VpnStateMonitor(this)
 
-        // Handle deep link from QR code scan (bamgate://invite?server=...&code=...)
-        handleDeepLink(intent)
-
         setContent {
             BamgateTheme {
                 Surface(
@@ -105,22 +102,6 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         vpnStateMonitor.destroy()
         super.onDestroy()
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleDeepLink(intent)
-    }
-
-    private fun handleDeepLink(intent: Intent?) {
-        val uri = intent?.data ?: return
-        if (uri.scheme != "bamgate" || uri.host != "invite") return
-
-        val server = uri.getQueryParameter("server") ?: return
-        val code = uri.getQueryParameter("code") ?: return
-
-        // Store the invite parameters for the setup screen to pick up.
-        configRepo.setPendingInvite(server, code)
     }
 
     private fun requestVpnPermission() {
