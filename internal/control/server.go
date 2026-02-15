@@ -44,6 +44,7 @@ func ResolveSocketPath() string {
 type Status struct {
 	Device        string       `json:"device"`
 	Address       string       `json:"address"`
+	Routes        []string     `json:"routes,omitempty"`
 	ServerURL     string       `json:"server_url"`
 	UptimeSeconds float64      `json:"uptime_seconds"`
 	Peers         []PeerStatus `json:"peers"`

@@ -27,6 +27,11 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// Print header.
 	fmt.Fprintf(os.Stdout, "Device:    %s\n", status.Device)
 	fmt.Fprintf(os.Stdout, "Address:   %s\n", status.Address)
+	routes := "none"
+	if len(status.Routes) > 0 {
+		routes = fmt.Sprintf("%v", status.Routes)
+	}
+	fmt.Fprintf(os.Stdout, "Routes:    %s\n", routes)
 	fmt.Fprintf(os.Stdout, "Server:    %s\n", status.ServerURL)
 	fmt.Fprintf(os.Stdout, "Uptime:    %s\n", formatDuration(time.Duration(status.UptimeSeconds*float64(time.Second))))
 	fmt.Fprintf(os.Stdout, "Peers:     %d\n", len(status.Peers))

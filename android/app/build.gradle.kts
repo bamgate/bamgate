@@ -12,8 +12,8 @@ android {
         applicationId = "com.bamgate.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = (findProperty("bamgateVersionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (findProperty("bamgateVersionName") as String?) ?: "dev"
     }
 
     buildTypes {

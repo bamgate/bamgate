@@ -28,3 +28,65 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.2.12479018"
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      - name: Build AAR
+        run: gomobile bind -target android -androidapi 24 -o android/app/libs/bamgate.aar ./mobile/
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          echo "version_name=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          ./gradlew assembleDebug \
+            -PbamgateVersionName=${{ steps.version.outputs.version_name }} \
+            -PbamgateVersionCode=${{ steps.version.outputs.version_code }}
+
+      - name: Upload APK to release
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+            bamgate_${{ steps.version.outputs.version_name }}.apk
+          gh release upload ${{ steps.version.outputs.tag }} \
+            bamgate_${{ steps.version.outputs.version_name }}.apk \
+            --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

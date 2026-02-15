@@ -849,6 +849,7 @@ func (a *Agent) Status() control.Status {
 	return control.Status{
 		Device:        a.cfg.Device.Name,
 		Address:       a.cfg.Device.Address,
+		Routes:        a.cfg.Device.Routes,
 		ServerURL:     a.cfg.Network.ServerURL,
 		UptimeSeconds: time.Since(a.startedAt).Seconds(),
 		Peers:         peers,
