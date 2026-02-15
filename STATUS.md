@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-14 (session 14)
+Last updated: 2026-02-15 (session 15)
 
 ## Current Phase
 
@@ -16,307 +16,57 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 
 ## Completed
 
-- Detailed architecture design (ARCHITECTURE.md) with 7-phase implementation plan
-- Project scaffolding: Go module, directory structure, all package stubs
-- Coding guidelines and AI agent instructions (AGENTS.md)
-- Project README
-- **Signaling protocol** (`pkg/protocol/protocol.go`): `Message` interface with 6 concrete message types (`JoinMessage`, `OfferMessage`, `AnswerMessage`, `ICECandidateMessage`, `PeersMessage`, `PeerLeftMessage`), JSON marshal/unmarshal with type discriminator registry. Shared package with zero external dependencies (TinyGo-compatible).
-- **Signaling client** (`internal/signaling/client.go`): WebSocket client with channel-based receive, context-aware lifecycle, automatic reconnection with exponential backoff
-- **Signaling hub** (`internal/signaling/hub.go`): Exported `Hub` type implementing `http.Handler` — relays SDP offers/answers and ICE candidates between connected peers, tracks peer presence, broadcasts join/leave events to all connected peers. Extracted from test suite for reuse by `cmd/bamgate-hub` and tests.
-- **Signaling tests** (`protocol_test.go`, `client_test.go`): Full test suite with signaling hub, covering round-trip serialization, peer exchange, peer-left notifications, reconnection, context cancellation, and error cases. All tests pass with `-race`.
-- **WebRTC ICE configuration** (`internal/webrtc/ice.go`): `ICEConfig` struct with STUN/TURN server support, default public STUN servers (Cloudflare + Google), conversion to pion ICE server format
-- **WebRTC data channel** (`internal/webrtc/datachan.go`): Data channel configuration for unreliable, unordered delivery (`ordered: false`, `maxRetransmits: 0`) — critical for WireGuard UDP-like behavior
-- **WebRTC peer connection** (`internal/webrtc/peer.go`): `Peer` struct wrapping pion `RTCPeerConnection` with SDP offer/answer exchange (`CreateOffer`, `HandleOffer`, `SetAnswer`), trickle ICE candidate relay (`AddICECandidate`), data channel lifecycle management, connection state callbacks, and graceful shutdown
-- **WebRTC integration tests** (`internal/webrtc/peer_test.go`): 4 tests covering SDP offer/answer exchange, bidirectional data transfer over data channels, unreliable/unordered configuration verification, and ICE connection state callbacks. All tests pass with `-race`.
-- **WireGuard key management** (`internal/config/keys.go`): `Key` type (32-byte Curve25519) with `GeneratePrivateKey()` (RFC 7748 §5 clamping via `crypto/curve25519`), `PublicKey()` derivation, `ParseKey()` base64 decoding, `MarshalText`/`UnmarshalText` for seamless TOML/JSON integration, `IsZero()` zero-value check. Verified against RFC 7748 §6.1 test vectors.
-- **TOML config management** (`internal/config/config.go`): `Config` struct with `NetworkConfig` (name, server_url, auth_token, turn_secret), `DeviceConfig` (name, private_key, address), `STUNConfig` (servers), `WebRTCConfig` (ordered, max_retransmits). `LoadConfig`/`SaveConfig` with `BurntSushi/toml`, `DefaultConfigPath()` respecting `$XDG_CONFIG_HOME`, default STUN servers, 0600 file permissions for secrets.
-- **Config tests** (`keys_test.go`, `config_test.go`): 21 tests covering key generation, clamping correctness, RFC 7748 known vector, base64 round-trips, MarshalText/UnmarshalText, TOML save/load round-trip, defaults application, missing file errors, nested directory creation, Key serialization in TOML. All tests pass with `-race`.
-- **WireGuard TUN device** (`internal/tunnel/tun.go`): Wrapper around `wireguard-go`'s `tun.CreateTUN` with default interface name (`bamgate0`) and MTU (1420).
-- **WireGuard UAPI config** (`internal/tunnel/config.go`): `DeviceConfig` and `PeerConfig` structs (with `Endpoint` field for custom Bind routing), `BuildUAPIConfig` / `BuildPeerUAPIConfig` / `BuildRemovePeerUAPIConfig` for generating wireguard-go's IPC configuration strings. Keys hex-encoded per UAPI spec.
-- **WireGuard device lifecycle** (`internal/tunnel/device.go`): `Device` struct wrapping wireguard-go's `device.Device` + TUN interface. `NewDevice` creates and starts the WireGuard device with a custom `conn.Bind`. `AddPeer`/`RemovePeer` for dynamic peer management. Adapts wireguard-go's logger to `slog`.
-- **Tunnel tests** (`internal/tunnel/config_test.go`): 9 tests covering hex key encoding, UAPI config generation (device-only, with peers, peer ordering, multiple allowed IPs, keepalive, remove peer). All tests pass with `-race`.
-- **Bridge / custom conn.Bind** (`internal/bridge/bridge.go`): Custom `conn.Bind` implementation that transports WireGuard encrypted packets over WebRTC data channels instead of UDP. `Bind` struct manages a set of data channels (one per remote peer), routes `Send` calls to the correct data channel via `Endpoint` peer ID, and queues incoming data channel messages for wireguard-go's receive loop. `Endpoint` struct implements `conn.Endpoint` with peer ID-based addressing. Includes `SetDataChannel`/`RemoveDataChannel` for dynamic peer management, graceful `Close` with channel-based unblocking, and automatic close-channel reset in `Open()` to survive wireguard-go's `BindUpdate` cycle.
-- **Bridge tests** (`internal/bridge/bridge_test.go`): 12 tests covering Open/Receive, Close unblocking, Send to real WebRTC data channels, Send to unknown peer, ParseEndpoint, BatchSize, SetMark, RemoveDataChannel, multiple peers, bidirectional data channel receive, Endpoint methods, and Reset lifecycle. All tests pass with `-race`.
-- **Agent orchestrator** (`internal/agent/agent.go`): Top-level coordinator tying signaling + WebRTC + bridge + WireGuard. Manages full lifecycle: TUN creation, WireGuard device setup with custom Bind, signaling connection with reconnection, peer discovery and WebRTC connection establishment, dynamic WireGuard peer management as data channels open/close. Uses lexicographic peer ID ordering to determine offer/answer roles. Exchanges WireGuard public keys in offer/answer messages. Configures TUN interface IP via `ip` command.
-- **CLI `bamgate up`** (`cmd/bamgate/main.go`): Minimal CLI that loads TOML config, validates required fields, sets up signal handling (SIGINT/SIGTERM), and runs the agent until shutdown. Supports `--config` and `-v` flags.
-- **Standalone signaling hub** (`cmd/bamgate-hub/main.go`): Lightweight HTTP server running the signaling `Hub` for local/LAN testing. Supports `-addr` flag. Graceful shutdown on signals.
-- **LAN testing guide** (`docs/testing-lan.md`): Step-by-step instructions for testing the full tunnel between two Linux machines.
-- **End-to-end LAN tunnel verified**: Two Linux machines successfully ping each other through the WireGuard-over-WebRTC tunnel using the local signaling hub. Three critical bugs fixed during testing:
-  - Hub was not broadcasting join notifications to existing peers (first peer never discovered later peers)
-  - Offer/answer messages did not carry WireGuard public keys (answering peer couldn't configure WireGuard)
-  - Bridge `Bind.Open()` did not reset the close channel after wireguard-go's `Close→Open` BindUpdate cycle (receive loop was dead on arrival)
-- **Shared protocol package** (`pkg/protocol/`): Extracted signaling protocol types from `internal/signaling/` into a standalone package with zero external dependencies (only `encoding/json` and `fmt`). TinyGo-compatible, shared between Go client and Cloudflare Worker.
-- **Cloudflare Worker signaling server** (`worker/`): Go/Wasm Durable Object implementing the signaling hub. Architecture: JS shell (`src/worker.mjs`) exports Worker `fetch` handler and `SignalingRoom` DO class using WebSocket Hibernation API. DO class bridges WebSocket events to Go/Wasm callbacks via `syscall/js`. Go hub logic (`hub.go`) manages peer state, routes signaling messages (offer/answer/ice-candidate), broadcasts join/leave events. Wasm entry point (`main.go`) registers callbacks and blocks. Bearer token auth on `/connect` endpoint via `AUTH_TOKEN` env var.
-- **Bearer token auth**: Added `AuthToken` field to `signaling.ClientConfig` and `Authorization: Bearer <token>` header to WebSocket dial. Agent passes `config.Network.AuthToken` to signaling client.
-- **DO hibernation state recovery**: After Cloudflare hibernates the Durable Object, Wasm is re-instantiated with empty state but WebSocket connections survive. Added `_rehydrate()` in JS that restores Go hub peer state from WebSocket attachments via `goOnRehydrate` callback.
-- **Deployed to Cloudflare**: Worker live at `https://bamgate.ag94441.workers.dev` (432KB total upload). Tested with 3 peers across the internet (2 home LAN machines + DigitalOcean droplet).
-- **Peer-specific AllowedIPs routing**: Fixed critical bug where every WireGuard peer got `AllowedIPs: 0.0.0.0/0`, causing last-added peer's route to override all previous peers. Now exchanges tunnel addresses via signaling (`Address` field in `JoinMessage`/`PeerInfo`), extracts host IP from CIDR, and uses `/32` AllowedIP per peer. Full pipeline: client → signaling → worker hub → peers list → agent → WireGuard config.
-- **CLI subcommand framework** (`cmd/bamgate/`): Restructured CLI using Cobra with subcommands: `up` (connect), `init` (setup wizard), `status` (query agent), `genkey` (generate WireGuard key). Global `--config` and `-v` flags inherited by all subcommands.
-- **`bamgate init` command**: Interactive setup wizard that generates a WireGuard key pair, prompts for device name (default: hostname), server URL, auth token, tunnel address, and network name. Writes `config.toml` with 0600 permissions. Detects and prompts before overwriting existing config.
-- **`bamgate genkey` command**: Generates a new Curve25519 private key (stdout, pipe-friendly) and prints the corresponding public key to stderr.
-- **Subnet routing**: Peers can advertise additional subnets via `routes` field in `[device]` config. Routes propagate through signaling (`Routes` field in `JoinMessage`/`PeerInfo`), through the Worker DO, and are added as WireGuard AllowedIPs on remote peers. Dangerous routes (`0.0.0.0/0`, `::/0`) and invalid CIDRs are rejected with warnings.
-- **ICE restart / resilience**: Replaced immediate peer teardown on ICE failure with a restart-then-remove strategy. `ICEConnectionStateDisconnected` triggers a 5-second grace period (ICE may self-recover). `ICEConnectionStateFailed` triggers an immediate ICE restart via `CreateOffer` with ICE restart flag. Up to 3 restart attempts before tearing down. `ICEConnectionStateConnected` resets the restart counter. Grace timers are cleaned up on peer removal.
-- **`bamgate status` command + control server** (`internal/control/`): Agent listens on Unix socket (`/run/bamgate/control.sock`) serving a JSON status API. Status includes device info, uptime, and per-peer state (address, ICE connection state, ICE candidate type, advertised routes, connected-since timestamp). `bamgate status` connects to the socket and displays a formatted table. Control server starts non-fatally (agent runs without it if socket creation fails).
-- **Systemd service** (`contrib/bamgate.service`): Unit file with `Type=simple`, `Restart=on-failure`, capability-based hardening (`CAP_NET_ADMIN`, `CAP_NET_RAW`), filesystem restrictions (`ProtectSystem=strict`, `ProtectHome=read-only`), and runtime directory for the control socket.
-- **WebRTC test race fix**: Fixed pre-existing data race in `internal/webrtc/peer_test.go` where pion ICE gathering goroutines could send on closed candidate channels. Added `safeCandidateSender` helper using a `done` channel to guard sends during test teardown.
-- **Non-root TUN configuration** (`internal/tunnel/netlink.go`): Replaced `exec.Command("ip", ...)` calls with direct netlink syscalls (`NETLINK_ROUTE` socket) for adding IP addresses and bringing interfaces up. No dependency on the `ip` binary. Uses `golang.org/x/sys/unix` for raw syscall access. 4 tests for message construction.
-- **Smart control socket path** (`internal/control/server.go`): `ResolveSocketPath()` checks `/run/bamgate/` (systemd), then `$XDG_RUNTIME_DIR/bamgate/`, then `/tmp/bamgate/` as fallback.
-- **`bamgate install` command** (`cmd/bamgate/cmd_install.go`): `sudo bamgate install` copies binary to `/usr/local/bin/`, runs `setcap cap_net_admin,cap_net_raw+eip`. Optional `--systemd` flag installs the service file. Resolves the real user from `$SUDO_USER` and sets `User=`/`Group=` in the service file so the service runs with capabilities, not as root.
-- **`bamgate init` URL scheme normalization** (`cmd/bamgate/cmd_init.go`): `normalizeServerURL()` auto-prepends `wss://` for bare hostnames, converts `https://` to `wss://` and `http://` to `ws://`, rejects unsupported schemes. Prompt text updated to show `wss://` example. 9 table-driven tests.
-- **`bamgate up -d` daemon mode** (`cmd/bamgate/cmd_up.go`): `-d`/`--daemon` flag runs `sudo systemctl enable --now bamgate` — starts the service and enables it on boot. Checks that the systemd service file is installed first.
-- **`bamgate down` command** (`cmd/bamgate/cmd_down.go`): Counterpart to `up -d`. Runs `sudo systemctl disable --now bamgate` — stops the service and disables it from boot.
-- **Systemd service runs as user, not root**: The service file generated by `bamgate install --systemd` includes `User=` and `Group=` set to the actual user (from `$SUDO_USER`). Capabilities are granted via `AmbientCapabilities` — no root required.
-- **Worker redeployed**: Cloudflare Worker updated with subnet routing support (`Routes` field in peer state, join messages, and rehydration). Version `9bad22b0`.
-- **Automatic IP forwarding and NAT** (`internal/tunnel/netlink.go`, `internal/tunnel/nat.go`, `internal/agent/agent.go`): When a device advertises routes (e.g., `routes = ["192.168.1.0/24"]`), bamgate now automatically enables per-interface IPv4 forwarding via netlink `RTM_SETLINK` + `IFLA_AF_SPEC` (avoids procfs writes that need `CAP_DAC_OVERRIDE`) and adds nftables MASQUERADE rules via `github.com/google/nftables` (pure Go, no iptables/nft binaries needed) in a dedicated `bamgate` nftables table. Previous forwarding state is saved and restored on shutdown; the nftables table is removed on shutdown. No new capabilities required — `CAP_NET_ADMIN` is sufficient for both netlink forwarding and nftables. New helpers: `SetForwarding()`, `GetForwarding()`, `FindInterfaceForSubnet()`, `NATManager`. 3 new unit tests for netlink message construction.
-- **`--accept-routes` opt-in for remote subnet routes** (`internal/config/config.go`, `cmd/bamgate/cmd_up.go`, `internal/agent/agent.go`): Remote peers can advertise LAN subnets (e.g., `192.168.1.0/24`), but accepting those routes can break the local network if the subnets overlap (e.g., both sides on `192.168.1.0/24`). Route acceptance is now opt-in: by default, only the peer's `/32` tunnel address is added to WireGuard AllowedIPs — advertised subnets are ignored. Enable via `bamgate up --accept-routes` or `accept_routes = true` in `[device]` config. When disabled, a log message notes ignored routes. Advertising routes (forwarding + NAT on the server side) is unaffected.
-- **`bamgate setup` command** (`cmd/bamgate/cmd_setup.go`): Unified interactive setup wizard. Runs with `sudo`. Two paths: (1) Cloudflare API token — verifies token, detects existing worker or deploys new one with embedded assets, auto-assigns tunnel addresses; (2) Invite code — redeems code from worker, no CF account needed. Generates WireGuard keys, writes config (chowned to real user via `$SUDO_USER`), installs binary + capabilities, optionally installs systemd service.
-- **`bamgate invite` command** (`cmd/bamgate/cmd_invite.go`): Creates short-lived invite codes (10 min, single-use) via authenticated POST to worker `/invite` endpoint. Prints code + server URL for the new device.
-- **Cloudflare API client** (`internal/deploy/cloudflare.go`): Full REST API v4 client for Workers deployment. Verify token, list accounts, get subdomain, check worker existence, multipart worker upload (ESModule + Wasm + JS), Durable Object bindings + migrations, enable workers.dev route, read worker settings/bindings.
-- **Embedded worker assets** (`internal/deploy/assets.go`): Pre-built `worker.mjs` (16KB), `app.wasm` (414KB), `wasm_exec.js` (17KB) embedded via `//go:embed`. Zero external dependencies for deployment — no Node.js, npm, or TinyGo needed on target machine.
-- **Worker invite/network-info endpoints** (`worker/src/worker.mjs`): `POST /invite` (authenticated) creates invite with random 8-char code, 10-min expiry, stored in DO SQLite. `GET /invite/{code}` (unauthenticated) redeems invite, returns server URL + auth token + auto-assigned address. `GET /network-info` (authenticated) returns subnet, assigned devices, next available address. SQLite tables: `invites`, `devices`, `network`.
-- **Auto tunnel address assignment**: Worker tracks assigned addresses in SQLite `devices` table. Computes next available IP from subnet (default `10.0.0.0/24`). First device gets `.1`, subsequent devices get next free address. Addresses registered on join and on invite redemption.
-- **Config `[cloudflare]` section** (`internal/config/config.go`): New `CloudflareConfig` struct with `api_token`, `account_id`, `worker_name`. Stored in TOML config for re-deploy and management operations.
-- **TURN relay over WebSocket** (`internal/turn/`, `worker/turn.go`, `worker/stun/`): Full TURN relay implementation on Cloudflare Workers Durable Objects. Enables connectivity through symmetric NAT (e.g., mobile tethering) where direct ICE/STUN hole punching fails. Architecture: client-side WebSocket proxy dialer (`internal/turn/dialer.go`) intercepts pion/ice's TURN TCP connections and routes them over `wss://worker/turn`; server-side TURN state machine (`worker/turn.go`) handles Allocate (two-phase 401 auth dance), Refresh, CreatePermission, ChannelBind, Send/Data indications, and ChannelData relay between peers via virtual relay addresses. Minimal STUN/TURN message parser (`worker/stun/stun.go`, ~500 lines) written from scratch for TinyGo/Wasm compatibility — handles message encoding/decoding, XOR address family, MESSAGE-INTEGRITY (HMAC-SHA1), FINGERPRINT (CRC32). TURN credential generation uses HMAC-SHA1 REST API convention (`internal/turn/credentials.go`): `username=<expiry>:<peerID>`, `password=base64(HMAC-SHA1(secret,username))`. Agent automatically configures TURN when `turn_secret` is present in config — generates credentials, sets up proxy dialer via `webrtc.SettingEngine.SetICEProxyDialer()`, and adds TURN server to ICE config. ICE tries direct candidates first, falls back to TURN relay transparently. Binary WebSocket support added to worker JS shim for STUN/TURN message forwarding (`jsSendBinary`, `goOnTURNMessage`). TURN secret generated during `bamgate setup`, deployed as plain text binding alongside AUTH_TOKEN, and included in invite redemption responses. Embedded worker assets rebuilt (576KB Wasm binary).
-- **TURN credential helpers** (`internal/turn/credentials.go`): `GenerateCredentials()` and `ValidateCredentials()` for TURN REST API time-limited credentials with HMAC-SHA1. `DeriveAuthKey()` for RFC 5389 long-term credential MESSAGE-INTEGRITY key derivation. 9 tests.
-- **WebSocket proxy dialer** (`internal/turn/dialer.go`): `WSProxyDialer` implementing `proxy.Dialer` — opens WebSocket to `/turn` endpoint, wraps with `websocket.NetConn()`, returns `*net.TCPAddr`-compatible `net.Conn` wrapper (required by pion/ice's forced type assertion). `TURNServerURL()` and `TURNWebSocketURL()` derive TURN URLs from signaling server URL. 13 tests.
-- **Android TUN support** (`internal/tunnel/tun_android.go`): `CreateTUN` on Android wraps a file descriptor from `VpnService.Builder.establish()` into a wireguard-go `tun.Device` via `tun.CreateTUNFromFile()`. `DefaultTUNName = "tun0"`. No kernel TUN creation — Android's VpnService provides the FD.
-- **Android platform stubs** (`internal/tunnel/netlink_android.go`, `nat_android.go`): No-op implementations of `AddAddress`, `SetInterfaceUp`, `AddRoute`, `SetForwarding`, `GetForwarding`, `NATManager` for Android. The VpnService configures the interface; kernel forwarding/NAT is not applicable.
-- **Build tags for Android** (`internal/tunnel/tun_linux.go`, `netlink.go`, `nat.go`, `netlink_test.go`): Gated Linux-specific code with `//go:build linux && !android` to prevent compilation conflicts. Android gets its own platform files.
-- **Agent TUN FD injection** (`internal/agent/agent.go`): `WithTunFD(fd int)` option. When FD > 0, the agent uses the caller-provided file descriptor instead of creating a TUN device. Skips `configureTUN()` on Android since VpnService already configured the interface.
-- **Socket protection** (`internal/agent/protectednet.go`, `protectednet_android.go`, `protectednet_ifaces.go`): `WithSocketProtector(p SocketProtector)` option injects a callback that calls Android `VpnService.protect(fd)` on raw socket FDs. `protectedNet` wraps pion/transport's `net.Net` interface, overriding `ResolveUDPAddr` and `ListenUDP` to protect created sockets from VPN routing loops. Integrated into signaling WebSocket dialer and pion/webrtc `SettingEngine`.
-- **Route update callback** (`internal/agent/agent.go`): `WithRouteUpdateCallback(func([]string))` option notifies the Android app when peers advertise new subnet routes. The app can re-establish the VPN with updated routes.
-- **gomobile binding layer** (`mobile/bamgate.go`): `Tunnel` struct with `Start(tunFD)`, `Stop()`, `IsRunning()`, `GetStatus()`, `UpdateConfig()`, `GetTunnelAddress()`, `GetTunnelSubnet()`, `GetMTU()`. `RedeemInvite(serverHost, code, deviceName)` function for invite-based onboarding. `Logger`, `SocketProtector`, `RouteUpdateCallback` interfaces for Kotlin callbacks. `mobileLogHandler` adapts `slog` to the mobile Logger. All types gomobile-compatible (basic types + interfaces only).
-- **QR code in `bamgate invite`** (`cmd/bamgate/cmd_invite.go`): Invite command now renders a `bamgate://invite?server=<host>&code=<code>` URL as a QR code in the terminal using `skip2/go-qrcode`. Android app scans the QR to redeem the invite.
-- **Android app scaffolding** (`android/`): Gradle 8.9, Kotlin 2.1, Jetpack Compose BOM 2024.12, min API 24, target API 35. Material 3 dynamic color theme. Single-activity architecture with Compose navigation.
-- **Android VpnService** (`BamgateVpnService.kt`): Creates TUN FD via `VpnService.Builder` with tunnel address, MTU 1420, DNS, and routes. Foreground notification (required for Android 8+). Implements `SocketProtector` calling `protect(fd)`. Starts Go tunnel on a coroutine, manages lifecycle via `VpnStateMonitor`.
-- **Android UI** (`HomeScreen.kt`, `SetupScreen.kt`, `QrScannerScreen.kt`, `SettingsScreen.kt`): Home screen with connect/disconnect toggle and peer status. Setup screen with QR scan or manual invite code entry. QR scanner using CameraX + ML Kit barcode detection. Settings screen for viewing/editing config, force relay toggle, accept routes toggle.
-- **Android config storage** (`ConfigRepository.kt`): DataStore-backed TOML config persistence. Handles invite redemption flow, config updates, and provides reactive state via Kotlin Flow.
-- **Android VPN state monitor** (`VpnStateMonitor.kt`): Singleton `StateFlow`-based state management for VPN connection status, shared between VpnService and UI.
-- **Vendored anet** (`third_party/anet/`): Local fork of `wlynxg/anet` with `replace` directive in `go.mod` for Android network interface compatibility with pion/transport.
-- **Android APK CI pipeline** (`.github/workflows/release.yml`): New `android` job runs in parallel with the existing `goreleaser` job on release creation. Installs Go 1.25, JDK 17, Android SDK + NDK 27, gomobile + gobind. Builds AAR via `gomobile bind`, then builds debug APK via Gradle with version injection from the git tag (`-PbamgateVersionName=<version> -PbamgateVersionCode=<major*10000+minor*100+patch>`). Uploads `bamgate_<version>.apk` to the GitHub release alongside CLI binaries. Version injection in `build.gradle.kts` uses `findProperty()` with fallback defaults (`"dev"` / `1`) for local builds.
+| Feature | Package / Files | Notes |
+|---------|----------------|-------|
+| Signaling protocol | `pkg/protocol/` | 6 message types, JSON type discriminator, TinyGo-compatible |
+| Signaling client | `internal/signaling/` | WebSocket, reconnect w/ exponential backoff |
+| Signaling hub | `internal/signaling/hub.go` | Reusable `http.Handler` for tests + `bamgate-hub` |
+| WebRTC peer connection | `internal/webrtc/` | ICE, unreliable/unordered data channels, SDP exchange |
+| WireGuard keys | `internal/config/keys.go` | Curve25519, RFC 7748 clamping, base64 + TOML round-trip |
+| TOML config | `internal/config/config.go` | Load/save, XDG paths, 0600 perms, `[cloudflare]` section |
+| WireGuard TUN + device | `internal/tunnel/` | TUN creation, UAPI config, device lifecycle, custom Bind |
+| Bridge (TUN <-> WebRTC) | `internal/bridge/` | Custom `conn.Bind` routing packets over data channels |
+| Agent orchestrator | `internal/agent/` | Peer lifecycle, ICE restart (3 retries), NAT/forwarding, watchdog |
+| CLI (Cobra) | `cmd/bamgate/` | `setup`, `up`, `down`, `invite`, `status`, `genkey`, `update`, `uninstall` |
+| Standalone hub | `cmd/bamgate-hub/` | Lightweight signaling server for LAN testing |
+| Control server | `internal/control/` | Unix socket JSON status API, smart path resolution |
+| Subnet routing | config + protocol + agent | `[device] routes`, propagated via signaling, AllowedIPs per peer |
+| `--accept-routes` | config + agent + CLI | Opt-in for remote subnet routes (prevents LAN overlap conflicts) |
+| IP forwarding + NAT | `internal/tunnel/` | Netlink forwarding + nftables MASQUERADE, auto-detected interface |
+| Cloudflare Worker | `worker/` | Go/Wasm DO: signaling hub, WebSocket Hibernation, bearer auth, rehydration |
+| Worker invite system | `worker/src/worker.mjs` | `/invite` + `/network-info` endpoints, DO SQLite, auto IP assignment |
+| TURN relay | `worker/turn.go`, `internal/turn/` | TURN-over-WebSocket for symmetric NAT, HMAC-SHA1 credentials |
+| STUN parser | `worker/stun/` | Minimal TinyGo-compatible STUN/TURN message codec (~500 lines) |
+| Embedded worker assets | `internal/deploy/assets.go` | `//go:embed` worker.mjs + app.wasm + wasm_exec.js |
+| Cloudflare API client | `internal/deploy/cloudflare.go` | REST v4: deploy, settings, bindings, migrations |
+| `bamgate setup` | `cmd/bamgate/cmd_setup.go` | Interactive wizard: CF API token or invite code path |
+| `bamgate install` | `cmd/bamgate/cmd_install.go` | Binary + caps + optional systemd/launchd service |
+| Systemd service | `contrib/bamgate.service` | Root daemon, `Restart=on-failure` |
+| Netlink TUN config | `internal/tunnel/netlink.go` | Raw netlink syscalls, no `ip` binary dependency |
+| macOS support | `internal/tunnel/*_darwin.go` | See [docs/macos-status.md](docs/macos-status.md) |
+| Android app | `mobile/`, `android/` | See [docs/android-status.md](docs/android-status.md) |
+| Android CI | `.github/workflows/release.yml` | gomobile AAR -> Gradle APK, uploaded to GitHub release |
+| QR invite codes | `cmd/bamgate/cmd_invite.go` | Terminal QR via `skip2/go-qrcode`, `bamgate://invite` URL scheme |
+| Install script + self-update | `install.sh`, `cmd_update.go` | `curl\|sh` install, `bamgate update` self-update |
+| Vendored anet | `third_party/anet/` | Patched `wlynxg/anet` for Android pion/transport compat |
 
-## Phase 5 Implementation Details
-
-Six work items, ordered by dependency.
-
-### 5.1 Subcommand Framework (Small)
-
-Restructure `cmd/bamgate/main.go` from a single implicit `up` command to proper subcommand CLI using stdlib `flag` with manual dispatch (no third-party CLI framework).
-
-**Subcommands:** `up`, `init`, `status`, `genkey`
-
-**Changes:**
-- `cmd/bamgate/main.go` — subcommand dispatch based on `os.Args[1]`
-- Each subcommand in its own file: `cmd_up.go`, `cmd_init.go`, `cmd_status.go`, `cmd_genkey.go`
-- Global flags (`--config`, `-v`) parsed before subcommand dispatch
-- Help text shows available commands
-
-### 5.2 `bamgate init` (Medium)
-
-Interactive setup wizard that generates a config file.
-
-**Flow:**
-1. Check if config already exists — warn and prompt to overwrite
-2. Generate WireGuard private key
-3. Prompt for: device name (default: hostname), server URL, auth token, tunnel address
-4. Write `config.toml` with 0600 permissions
-5. Print the derived public key
-
-**Changes:**
-- `cmd/bamgate/cmd_init.go` — interactive prompts via `bufio.Scanner`
-- Uses existing `config.SaveConfig()` and `config.GeneratePrivateKey()`
-
-### 5.3 Subnet Routing (Medium)
-
-Allow peers to advertise local subnets (e.g. `192.168.1.0/24`) so remote peers can reach home LAN services.
-
-**Config:** Add `routes` to `[device]` section:
-```toml
-[device]
-routes = ["192.168.1.0/24"]
-```
-
-**Signaling:** Add `Routes []string` to `JoinMessage` and `PeerInfo` in `pkg/protocol/`. Routes propagate through the Worker DO automatically.
-
-**Agent:** Include peer's advertised routes in AllowedIPs (in addition to `/32` host IP). Validate CIDRs, reject dangerous routes like `0.0.0.0/0`.
-
-**Changes:**
-- `internal/config/config.go` — add `Routes []string` to `DeviceConfig`
-- `pkg/protocol/protocol.go` — add `Routes` to `JoinMessage` and `PeerInfo`
-- `internal/signaling/client.go` — pass `Routes` in join message
-- `internal/agent/agent.go` — propagate routes to AllowedIPs
-- `worker/hub.go` — ensure routes field passes through
-- Tests for route propagation and validation
-
-### 5.4 ICE Restart / Resilience (Medium-Hard)
-
-Currently, ICE failure tears down the peer entirely. Instead, try an ICE restart first.
-
-**Approach:**
-- `ICEConnectionStateDisconnected` → start 5s timer, then ICE restart if not recovered
-- `ICEConnectionStateFailed` → immediate ICE restart
-- ICE restart: `CreateOffer` with ICE restart flag, send new offer via signaling, exchange new answer
-- Limit to 3 restart attempts, then tear down (current behavior)
-
-**Changes:**
-- `internal/webrtc/peer.go` — add `RestartICE()` method
-- `internal/agent/agent.go` — replace immediate `removePeer` with restart-then-remove strategy, per-peer restart counter/timer
-
-### 5.5 `bamgate status` via Unix Socket (Medium)
-
-**Agent side:** Listen on Unix socket at `/run/bamgate/control.sock`. Serve JSON status API.
-
-**Status response:**
-```json
-{
-  "device": "home-server",
-  "address": "10.0.0.1/24",
-  "server_url": "https://...",
-  "uptime_seconds": 3600,
-  "peers": [{
-    "id": "laptop",
-    "address": "10.0.0.2/24",
-    "state": "connected",
-    "ice_type": "host",
-    "routes": ["192.168.1.0/24"],
-    "connected_since": "2026-02-12T10:00:00Z"
-  }]
-}
-```
-
-**Changes:**
-- New `internal/control/server.go` — Unix socket HTTP server
-- `internal/agent/agent.go` — expose `Status()` method, start control server in `Run()`
-- `internal/webrtc/peer.go` — expose selected ICE candidate pair info
-- `cmd/bamgate/cmd_status.go` — connect to socket, format output as table
-
-### 5.6 Systemd Service (Small)
-
-Systemd unit file for running `bamgate up` as a persistent home agent.
-
-**Changes:**
-- `contrib/bamgate.service` — `Type=simple`, `Restart=on-failure`, capability-based hardening (`CAP_NET_ADMIN`, `CAP_NET_RAW`), `ReadWritePaths=/run/bamgate`
-
-### Execution Order
-
-```
-5.1 Subcommand framework     ← foundation
-5.2 bamgate init             ← standalone after 5.1
-5.3 Subnet routing            ← protocol + agent, independent of CLI
-5.4 ICE restart / resilience  ← agent-only, independent of CLI
-5.5 bamgate status           ← needs control socket + agent state
-5.6 Systemd service           ← just a file, goes last
-```
-
-### Files Affected
-
-| Area | New files | Modified files |
-|------|-----------|----------------|
-| CLI | `cmd/bamgate/cmd_up.go`, `cmd_init.go`, `cmd_status.go`, `cmd_genkey.go` | `cmd/bamgate/main.go` |
-| Control | `internal/control/server.go` | — |
-| Config | — | `internal/config/config.go` |
-| Protocol | — | `pkg/protocol/protocol.go` |
-| Signaling | — | `internal/signaling/client.go` |
-| WebRTC | — | `internal/webrtc/peer.go` |
-| Agent | — | `internal/agent/agent.go` |
-| Worker | — | `worker/hub.go` |
-| Systemd | `contrib/bamgate.service` | — |
+See [IDEAS.md](IDEAS.md) for the backlog of future work, code health improvements, and feature ideas.
 
 ## What's Next
 
 1. **Deploy and test TURN relay** — Redeploy the Cloudflare Worker with TURN support, set `TURN_SECRET`, and test end-to-end with phone tethering (symmetric NAT). Verify `bamgate status` shows `ice_type: relay`.
-2. **macOS support — launchd integration** — `up -d`, `down`, and `install --systemd` equivalents for macOS using launchd plists. See remaining items below.
+2. **macOS support — launchd integration** — `up -d`, `down`, and `install --systemd` equivalents for macOS using launchd plists. See [docs/macos-status.md](docs/macos-status.md).
 3. **Rate limiting** — Add request rate limiting to the Worker `/connect` and `/turn` endpoints to prevent abuse.
-4. **Android client** — Phase A+B in progress. See Android App Status section below.
-5. **End-to-end testing with systemd** — Verify the full `install --systemd` → `up -d` → `status` → `down` workflow on a fresh machine.
-6. **macOS end-to-end testing** — Test `sudo bamgate setup` → `sudo bamgate up` → `bamgate status` on a real Mac.
-
-### Android App Status
-
-**Goal:** Android app using gomobile AAR with Jetpack Compose UI, connecting to the existing Cloudflare Worker signaling server.
-
-**Architecture:** Go core library compiled to AAR via gomobile. Kotlin/Jetpack Compose UI. Android `VpnService` creates TUN FD and passes it to Go. Socket protection via gomobile callback interface (`VpnService.protect()`). Setup via QR code scan from `bamgate invite`.
-
-**Phase A+B: Go Bindings + Minimal Android App**
-
-#### Go Side
-
-| # | Item | Files | Status |
-|---|------|-------|--------|
-| 1 | Android TUN support | `internal/tunnel/tun_android.go` | **Done** |
-| 2 | Android network stubs | `internal/tunnel/netlink_android.go` | **Done** |
-| 3 | Android NAT stub | `internal/tunnel/nat_android.go` | **Done** |
-| 4 | Fix build tags (`linux && !android`) | `internal/tunnel/tun_linux.go`, `netlink.go`, `nat.go`, `netlink_test.go` | **Done** |
-| 5 | Agent TUN FD injection | `internal/agent/agent.go` — `WithTunFD(fd)` option | **Done** |
-| 6 | Socket protection callback | `internal/agent/agent.go`, `protectednet.go` — `WithSocketProtector()` + `protectedNet` wrapping pion/transport | **Done** |
-| 7 | gomobile binding layer | `mobile/bamgate.go` — `Tunnel`, `RedeemInvite()`, `Logger`, `SocketProtector` | **Done** |
-| 8 | QR code in `bamgate invite` | `cmd/bamgate/cmd_invite.go` — `bamgate://invite?server=&code=` QR in terminal | **Done** |
-
-#### Android Side
-
-| # | Item | Files | Status |
-|---|------|-------|--------|
-| 9 | Project scaffolding | `android/` — Gradle 8.9, Kotlin 2.1, Compose BOM 2024.12, min API 24 | **Done** |
-| 10 | AAR integration | `android/app/libs/bamgate.aar` — gomobile-built AAR | **Done** (built via CI) |
-| 11 | VpnService | `BamgateVpnService.kt` — TUN FD, foreground notification, protect() callback | **Done** |
-| 12 | Home screen | `HomeScreen.kt` — connect/disconnect toggle, status text | **Done** |
-| 13 | QR scan screen | `SetupScreen.kt` + `QrScannerScreen.kt` — CameraX + ML Kit barcode | **Done** |
-| 14 | Config storage | `ConfigRepository.kt` — DataStore for TOML config, invite deep link | **Done** |
-| 15 | VPN permission | `MainActivity.kt` — VpnService.prepare() consent, deep link handler | **Done** |
-| 16 | Build & test | — | Needs device test |
-| 17 | CI pipeline | `.github/workflows/release.yml` — `android` job | **Done** |
-
-#### Key Design Decisions
-
-- **gomobile AAR**: Export a thin `mobile/` package with gomobile-compatible types (string, int, []byte, error, interfaces). No structs with complex fields at the boundary.
-- **TUN FD injection**: `agent.WithTunFD(fd int)` option. If FD > 0, use it instead of `tunnel.CreateTUN()`. Skip `configureTUN()` — Android VpnService already configured the interface.
-- **Socket protection**: `SocketProtector` interface with `Protect(fd int) bool` method. Implemented in Kotlin calling `VpnService.protect()`. Passed to agent which injects into signaling WebSocket dialer and pion/webrtc SettingEngine.
-- **Build tags**: `//go:build linux && !android` on existing Linux files. `//go:build android` on new Android files.
-- **QR code content**: `bamgate://invite?server=<host>&code=<code>` URL scheme. Android app scans, redeems invite via HTTP, generates WireGuard keys, saves config.
-- **Min Android version**: API 24 (Android 7.0).
-- **Monorepo**: Android project lives in `android/` subdirectory of this repo.
-
-#### Phase C (Future): Setup & Onboarding Polish
-- Invite code paste fallback (no camera)
-- Config import/export
-- Battery optimization whitelist prompt
-
-#### Phase D (Future): Polish & Reliability
-- Network change handling (ConnectivityManager → ICE restart)
-- Always-on VPN support
-- Per-app VPN (`addDisallowedApplication`)
-- Settings screen
-- Connection quality indicator
-
-### macOS Support Status
-
-**Goal:** Full macOS (darwin) support for the bamgate CLI.
-
-**Phase 1 (DONE):** Core compilation and foreground operation. `GOOS=darwin go build` succeeds. `sudo bamgate up` runs in foreground on macOS.
-
-#### Completed
-
-- **Network interface management** (`internal/tunnel/netlink_darwin.go`): All 6 functions implemented using shell commands (`ifconfig`, `route`, `sysctl`). `netlink.go` gated with `//go:build linux`. Cross-platform `FindInterfaceForSubnet` extracted to `iface.go`.
-- **NAT masquerade** (`internal/tunnel/nat_darwin.go`): `NATManager` implemented using macOS PF (`pfctl`) with a `com.bamgate` anchor. `nat.go` gated with `//go:build linux`.
-- **TUN device naming**: `DefaultTUNName` is `"bamgate0"` on Linux (`tun_linux.go`), `"utun"` on macOS (`tun_darwin.go`). Agent uses `tunnel.DefaultTUNName` instead of hardcoded name.
-- **Control socket path**: `ResolveSocketPath()` uses `/var/run/bamgate/` on macOS, `/run/bamgate/` on Linux.
-- **CLI commands**: `setup`, `install`, `up` (foreground) work on macOS. `up -d`, `down`, and `install --systemd` give clear "not yet implemented" messages on macOS.
-
-#### Remaining — launchd integration
-
-| Feature | Status |
-|---------|--------|
-| `bamgate install` on macOS — write launchd plist to `/Library/LaunchDaemons/` | Not started |
-| `bamgate up -d` on macOS — `launchctl bootstrap system <plist>` | Not started |
-| `bamgate down` on macOS — `launchctl bootout system/com.bamgate` | Not started |
-| Optional: BSD ioctl/routing sockets (replace shell commands) | Not started |
+4. **Android client** — Phase A+B complete, needs device testing. See [docs/android-status.md](docs/android-status.md).
+5. **End-to-end testing with systemd** — Verify the full `install --systemd` -> `up -d` -> `status` -> `down` workflow on a fresh machine.
+6. **macOS end-to-end testing** — Test `sudo bamgate setup` -> `sudo bamgate up` -> `bamgate status` on a real Mac.
 
 ## Testing
 
 See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
-- **Phase 2 LAN test** (2026-02-10): Two Linux machines, ICE host candidates, WebRTC data channel, WireGuard handshake, bidirectional ping — all working.
-- **Phase 3 internet test** (2026-02-10): Three peers (2 home LAN + 1 DigitalOcean droplet) connected via Cloudflare Worker signaling. All peers can ping each other. ~2ms latency on LAN path, internet path varies by region.
+- **Phase 2 LAN test** (2026-02-10): Two Linux machines, bidirectional ping through WireGuard-over-WebRTC tunnel.
+- **Phase 3 internet test** (2026-02-10): Three peers (2 home LAN + 1 DigitalOcean droplet) via Cloudflare Worker. ~2ms LAN latency.
 
 ## Code Status
 
@@ -324,21 +74,21 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 |---------|-------|--------|
 | `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_setup.go, cmd_invite.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go | **Implemented + tested** — Cobra subcommands: setup, up, down, invite, status, genkey, update, uninstall |
 | `cmd/bamgate-hub` | main.go | **Implemented** — standalone signaling server |
-| `internal/agent` | agent.go, agent_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection via `protectedNet` (wraps pion/transport `net.Net` to call `VpnService.protect()` on raw sockets) |
+| `internal/agent` | agent.go, agent_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection |
 | `internal/control` | server.go, server_test.go | **Implemented + tested** — Unix socket status API |
 | `internal/bridge` | bridge.go, bridge_test.go | **Implemented + tested** |
-| `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** — Added CloudflareConfig section |
+| `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** |
 | `internal/signaling` | client.go, hub.go, client_test.go | **Implemented + tested** |
 | `pkg/protocol` | protocol.go, protocol_test.go | **Implemented + tested** |
-| `internal/tunnel` | config.go, device.go, tun.go, tun_linux.go, tun_darwin.go, tun_android.go, iface.go, netlink.go (linux), netlink_darwin.go, netlink_android.go, nat.go (linux), nat_darwin.go, nat_android.go, config_test.go, netlink_test.go | **Implemented + tested** — Cross-platform: Linux (netlink + nftables), macOS (ifconfig/route/sysctl + pfctl), Android (TUN FD from VpnService, no-op netlink/NAT stubs) |
-| `internal/turn` | credentials.go, credentials_test.go, dialer.go, dialer_test.go | **Implemented + tested** — TURN credential generation/validation, WebSocket proxy dialer for pion/ice |
-| `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** — Added optional `webrtc.API` support for proxy dialer |
-| `internal/deploy` | cloudflare.go, assets.go, assets/ | **Implemented** — Cloudflare API client, embedded worker assets. TURN_SECRET binding support. |
-| `worker/` | hub.go, turn.go, main.go, src/worker.mjs | **Implemented** — TinyGo 576KB Wasm, Cloudflare Workers free tier. Signaling + TURN relay + invite + network-info endpoints. |
-| `mobile/` | bamgate.go, tools.go | **Implemented** — gomobile-compatible binding layer: `Tunnel` (start/stop/status), `RedeemInvite()`, `Logger`/`SocketProtector`/`RouteUpdateCallback` interfaces, `UpdateConfig()`, config helpers |
-| `android/` | Gradle project, 9 Kotlin files | **Implemented** — Jetpack Compose app: `MainActivity` (navigation, deep link, VPN permission), `BamgateVpnService` (TUN FD, foreground notification, protect()), `HomeScreen` (connect toggle), `SetupScreen` + `QrScannerScreen` (CameraX + ML Kit), `SettingsScreen`, `ConfigRepository` (DataStore), `VpnStateMonitor`, Material 3 theme |
-| `third_party/anet` | android_api_level.go, LICENSE | **Vendored** — Patched `wlynxg/anet` for Android network interface compatibility (local replace in go.mod) |
-| `worker/stun` | stun.go, stun_test.go | **Implemented + tested** — Minimal STUN/TURN message parser/builder (TinyGo-compatible). 20 tests. |
+| `internal/tunnel` | config.go, device.go, tun.go, tun_linux.go, tun_darwin.go, tun_android.go, iface.go, netlink.go, netlink_darwin.go, netlink_android.go, nat.go, nat_darwin.go, nat_android.go, config_test.go, netlink_test.go | **Implemented + tested** — Cross-platform: Linux (netlink + nftables), macOS (ifconfig/route/pfctl), Android (VpnService FD, no-op stubs) |
+| `internal/turn` | credentials.go, credentials_test.go, dialer.go, dialer_test.go | **Implemented + tested** |
+| `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** |
+| `internal/deploy` | cloudflare.go, assets.go, assets/ | **Implemented** — Cloudflare API client, embedded worker assets |
+| `worker/` | hub.go, turn.go, main.go, src/worker.mjs | **Implemented** — TinyGo Wasm, signaling + TURN + invite endpoints |
+| `worker/stun` | stun.go, stun_test.go | **Implemented + tested** — 20 tests |
+| `mobile/` | bamgate.go, tools.go | **Implemented** — gomobile binding layer |
+| `android/` | Gradle project, 9 Kotlin files | **Implemented** — Jetpack Compose app |
+| `third_party/anet` | android_api_level.go, LICENSE | **Vendored** — Android network interface compat |
 
 ## Dependencies
 
@@ -349,35 +99,35 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 | `github.com/BurntSushi/toml` | v1.6.0 | TOML config file parsing |
 | `golang.org/x/crypto` | v0.48.0 | Curve25519 key derivation (WireGuard keys) |
 | `github.com/spf13/cobra` | v1.10.2 | CLI subcommand framework |
-| `github.com/google/nftables` | v0.3.0 | Pure Go nftables (netlink-based) for NAT masquerade rules |
-| `golang.org/x/sys` | v0.41.0 | Netlink syscalls for TUN configuration, IP forwarding (non-root) |
-| `github.com/pion/transport/v4` | v4.0.1 | Transport layer abstractions (custom `net.Net` for Android socket protection) |
-| `github.com/skip2/go-qrcode` | latest | Terminal QR code rendering for `bamgate invite` |
-| `golang.org/x/mobile` | latest | gomobile toolchain for Android AAR compilation |
+| `github.com/google/nftables` | v0.3.0 | Pure Go nftables for NAT masquerade |
+| `golang.org/x/sys` | v0.41.0 | Netlink syscalls for TUN config, IP forwarding |
+| `github.com/pion/transport/v4` | v4.0.1 | Transport abstractions (Android socket protection) |
+| `github.com/skip2/go-qrcode` | latest | Terminal QR code rendering |
+| `golang.org/x/mobile` | latest | gomobile toolchain for Android AAR |
 | `golang.zx2c4.com/wireguard` | v0.0.0-20250521 | Userspace WireGuard device + TUN interface |
 
 ## Releases
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| v1.7.1 | 2026-02-14 | New ㅂ (bieup) logo in yellow and dark grey, Android icon update |
-| v1.7.0 | 2026-02-14 | Show local pushed routes in `bamgate status`, Android APK CI pipeline |
-| v1.6.0 | 2026-02-14 | Overhaul install: drop Homebrew, add install script + self-update + root daemon model, launchd support |
-| v1.5.3 | 2026-02-12 | Fix ETXTBSY when copying over running binary during setup |
-| v1.5.2 | 2026-02-12 | Fix systemd 203/EXEC on Homebrew installs (SELinux user_home_t) |
+| v1.7.1 | 2026-02-14 | New logo, Android icon update |
+| v1.7.0 | 2026-02-14 | Show local pushed routes in `bamgate status`, Android APK CI |
+| v1.6.0 | 2026-02-14 | Overhaul install: drop Homebrew, add install script + self-update + root daemon, launchd |
+| v1.5.3 | 2026-02-12 | Fix ETXTBSY when copying over running binary |
+| v1.5.2 | 2026-02-12 | Fix systemd 203/EXEC on Homebrew installs (SELinux) |
 | v1.5.1 | 2026-02-12 | Document symlink step for Linux Homebrew users |
-| v1.5.0 | 2026-02-12 | Remove install command, consolidate into setup with --force, project logo |
-| v1.4.0 | 2026-02-12 | Add MIT license, Homebrew tap support, transfer to bamgate org |
-| v1.3.0 | 2026-02-12 | Rename project from riftgate to bamgate (밤gate — "night gate") |
-| v1.2.2 | 2026-02-12 | Fix self-peer appearing in status after DO hibernation/reconnection |
-| v1.2.1 | 2026-02-12 | Fix ICE restart offer storm (glare resolution), add `bamgate version` command |
-| v1.2.0 | 2026-02-12 | TURN relay over WebSocket for symmetric NAT traversal |
-| v1.1.1 | 2026-02-12 | Fix macOS TUN routing — add subnet route after address assignment |
-| v1.1.0 | 2026-02-12 | macOS (darwin) support for amd64 + arm64 |
-| v1.0.0 | 2026-02-12 | First major release — automated setup, daemon mode, subnet routing with forwarding/NAT |
-| v0.3.0 | 2026-02-11 | Fix AllowedIPs routing, per-peer /32 addresses via signaling |
-| v0.2.0 | 2026-02-11 | End-to-end LAN tunnel verified, 3 critical bug fixes |
-| v0.1.0 | 2026-02-11 | Initial pre-release — signaling + WebRTC + WireGuard integration |
+| v1.5.0 | 2026-02-12 | Remove install command, consolidate into setup with --force |
+| v1.4.0 | 2026-02-12 | MIT license, Homebrew tap, transfer to bamgate org |
+| v1.3.0 | 2026-02-12 | Rename from riftgate to bamgate |
+| v1.2.2 | 2026-02-12 | Fix self-peer after DO hibernation/reconnection |
+| v1.2.1 | 2026-02-12 | Fix ICE restart offer storm, add `bamgate version` |
+| v1.2.0 | 2026-02-12 | TURN relay over WebSocket for symmetric NAT |
+| v1.1.1 | 2026-02-12 | Fix macOS TUN routing |
+| v1.1.0 | 2026-02-12 | macOS (darwin) support |
+| v1.0.0 | 2026-02-12 | First major release — automated setup, daemon mode, subnet routing |
+| v0.3.0 | 2026-02-11 | Fix AllowedIPs routing, per-peer /32 addresses |
+| v0.2.0 | 2026-02-11 | End-to-end LAN tunnel, 3 critical bug fixes |
+| v0.1.0 | 2026-02-11 | Initial pre-release |
 
 ## Open Questions / Decisions
 
@@ -385,26 +135,20 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 ## Changelog
 
-- **2026-02-14 (session 14)**: New project logo — ㅂ (bieup, Hangul letter for "B") in yellow (`#E3D367`) on dark grey (`#1C1E1F`), rounded/cute style. Replaced old shield/gate logo. Files: `logo.svg` (source), `logo.png` (1024x1024), `logo-nobg.svg` and `logo-nobg.png` (transparent background variants), `logo-hd.png` (4096x4096 high-def). Updated Android adaptive icon foreground (`ic_launcher_foreground.xml`) and background (`ic_launcher_background.xml`) to match new design. Regenerated all legacy mipmap PNGs at proper render density. Updated README.md to reference `logo.png`. Removed old `bamgate.svg` and `bamgate.png`.
-- **2026-02-14 (session 13)**: Show local pushed routes in `bamgate status`. Previously, the `Routes` column only appeared for remote peers in the peer table. Now the status header displays the host's own configured routes (from `[device] routes` in config) as a `Routes:` line between `Address:` and `Server:`. Shows `none` when no routes are configured. Three-file change: added `Routes []string` to `control.Status` struct, populated from `a.cfg.Device.Routes` in `agent.Status()`, displayed in `cmd_status.go` header output.
-- **2026-02-14 (session 12)**: Android APK CI pipeline. Added `android` job to `.github/workflows/release.yml` — runs in parallel with GoReleaser on release creation. Full build chain: Go 1.25 + JDK 17 + Android SDK + NDK 27 + gomobile → AAR → Gradle `assembleDebug` → `bamgate_<version>.apk` uploaded to GitHub release. Version injection via Gradle properties (`-PbamgateVersionName`, `-PbamgateVersionCode`) with `findProperty()` fallback defaults for local builds. Version code derived as `major*10000 + minor*100 + patch` for monotonic ordering. Updated STATUS.md with Android work from session 11 that was previously undocumented: added Completed bullets for all Android/gomobile items, expanded session 11 changelog, added `mobile/`, `android/`, `third_party/anet` to Code Status table, updated dependency versions.
-- **2026-02-14 (session 11)**: Overhaul install model. Drop Homebrew — replace with universal `install.sh` (curl|sh) and `bamgate update` self-update command. Daemon now runs as root via systemd (Linux) and launchd (macOS), eliminating setcap, symlinks, and the re-run-setup-after-upgrade dance. Config moves from `~/.config/bamgate/config.toml` to `/etc/bamgate/config.toml` (auto-migration on `sudo bamgate setup`). New commands: `bamgate update` (self-update from GitHub releases, atomic binary replace, auto-restart service), `bamgate uninstall` (stops service, removes service file/config/binary). launchd support for macOS (`/Library/LaunchDaemons/com.bamgate.bamgate.plist`) — `up -d` and `down` now work on macOS. Removed deprecated `bamgate init` command; shared helpers (`promptString`, `promptYesNo`, `normalizeServerURL`) moved to `cmd_helpers.go`. Simplified systemd service (no User/Group/AmbientCapabilities — root has all caps). Removed Homebrew tap from GoReleaser and CI. Added `make install` target. Android Phase A+B implementation: Go side — Android TUN support (`tun_android.go` wraps VpnService FD via `tun.CreateTUNFromFile`), no-op netlink/NAT stubs for Android, `//go:build linux && !android` tags on Linux files, `WithTunFD(fd)` agent option for FD injection, `WithSocketProtector()` for `VpnService.protect()` integration via `protectedNet` wrapping pion/transport's `net.Net`, `WithRouteUpdateCallback()` for dynamic route updates. gomobile binding layer (`mobile/bamgate.go`) with `Tunnel` (start/stop/status), `RedeemInvite()`, `Logger`/`SocketProtector`/`RouteUpdateCallback` interfaces — all gomobile-compatible types. QR code rendering in `bamgate invite` for mobile onboarding (`bamgate://invite?server=&code=` URL scheme). Android side — full Jetpack Compose app (`android/`): Gradle 8.9, Kotlin 2.1, min API 24, Material 3. `BamgateVpnService` with TUN FD creation, foreground notification, socket protection. `HomeScreen` with connect/disconnect toggle. `SetupScreen` + `QrScannerScreen` (CameraX + ML Kit barcode). `SettingsScreen` for config. `ConfigRepository` (DataStore-backed TOML persistence). `VpnStateMonitor` (StateFlow). Vendored `wlynxg/anet` for Android network compatibility. Makefile targets: `make aar`, `make android`, `make install-android`.
-- **2026-02-12 (session 10)**: Fix ETXTBSY ("text file busy") error when `sudo bamgate setup` copies the binary to `/usr/local/bin/bamgate` while a previous copy is still running (e.g., from the systemd service). `copyBinary()` now writes to a temp file in the same directory and does an atomic `os.Rename`, which the kernel allows even for executing binaries. Fix systemd service failing with `status=203/EXEC` on Homebrew-installed binaries. Root cause: Homebrew Cask installs the binary under `/home/linuxbrew/.linuxbrew/Caskroom/...`, and SELinux labels files under `/home` as `user_home_t` — systemd services are denied execution of `user_home_t` binaries. Fix: `installSystemdService()` now detects when the resolved binary path is under `/home/` and copies it to `/usr/local/bin/bamgate` (which receives the correct `bin_t` SELinux label automatically), sets capabilities on the copy, and uses the system path in `ExecStart=`. Non-Homebrew installs are unaffected. Added `copyBinary()` helper for streaming file copy with permissions.
-- **2026-02-12 (session 9)**: Remove `install` command — `setup` now handles everything. When config already exists, `sudo bamgate setup` re-applies Linux capabilities and updates the systemd service path (handles `brew upgrade` gracefully). Added `--force` flag to redo full setup. Platform-aware TUN error messages guide users to `sudo bamgate setup` (Linux) or `sudo bamgate up` (macOS). No longer copies binary to `/usr/local/bin` — works with Homebrew-managed binaries in-place. Fixed auth token prefix `rg_` → `bg_`. Updated systemd service docs URL to `bamgate/bamgate`. Added project logo (SVG + PNG) to README. Add MIT license, Homebrew tap via GoReleaser, and GitHub App-based token for cross-repo formula publishing. Project transferred from `kuuji/bamgate` to `bamgate` GitHub org. GoReleaser `homebrew_casks` section auto-publishes cask to `bamgate/homebrew-tap` on release. Release workflow uses `actions/create-github-app-token` to generate ephemeral tokens (no PAT expiry). Modernized `.goreleaser.yaml`: migrated deprecated `brews` to `homebrew_casks`, `format` to `formats`, split archives by build ID so cask filtering works, added macOS quarantine removal hook for unsigned binaries. Users can now install via `brew install bamgate/tap/bamgate`.
-- **2026-02-12 (session 8)**: Rename project from riftgate to bamgate (밤gate — "night gate", Korean 밤 = night). Full codebase rename across 49 files (318 lines): Go module path, import paths, binary names, CLI commands, string constants (data channel label, TURN realm, TUN interface name, nftables table, PF anchor), config paths (~/.config/bamgate/), control socket paths (/run/bamgate/), HTTP headers (X-Bamgate-*), systemd service, worker config, documentation. Directory renames: cmd/riftgate → cmd/bamgate, cmd/riftgate-hub → cmd/bamgate-hub, contrib/riftgate.service → contrib/bamgate.service. All tests pass, both binaries build cleanly.
-- **2026-02-12 (session 7)**: Fix ICE restart offer storm; fix self-peer showing as "initializing" in `bamgate status` after DO hibernation/rehydration or signaling reconnection (agent now skips its own peer ID in the peers list). When both peers detected ICE failure simultaneously (common with symmetric NAT / phone tethering), both sent ICE restart offers. The incoming offer replaced the existing PeerConnection, destroying a connection that had just recovered — causing an infinite restart loop. Three fixes: (1) reuse existing PeerConnection for incoming offers instead of creating a new one; (2) glare resolution using lexicographic peer ID tiebreaker — the preferred offerer ignores competing offers; (3) `pendingRestart` flag tracks outgoing restart offers to prevent duplicates. Also added `bamgate version` command with build-time version injection via ldflags (GoReleaser sets it from the git tag, local builds show `dev`).
-- **2026-02-12 (session 6)**: Phase 4 — TURN relay on Cloudflare Workers. Full TURN-over-WebSocket implementation enabling connectivity through symmetric NAT (mobile tethering, restrictive corporate firewalls). Client-side: WebSocket proxy dialer (`internal/turn/dialer.go`) hooks into pion/ice via `SettingEngine.SetICEProxyDialer()` — ICE automatically tries direct candidates first and falls back to TURN relay transparently. TURN credential generation uses HMAC-SHA1 REST API convention with time-limited credentials (`internal/turn/credentials.go`). Agent automatically configures TURN when `turn_secret` is in config. Server-side: TURN state machine in Go/Wasm (`worker/turn.go`) handles the full Allocate two-phase auth dance (401 challenge → authenticated retry), Refresh, CreatePermission, ChannelBind, Send/Data indications, and ChannelData fast-path relay. Virtual relay addressing — the DO assigns synthetic relay addresses and routes packets between peers' WebSocket connections. Minimal STUN message parser (`worker/stun/stun.go`, ~500 lines) written from scratch for TinyGo compatibility — handles message encoding/decoding, XOR address family, MESSAGE-INTEGRITY (HMAC-SHA1), FINGERPRINT (CRC32). Worker JS shim updated with binary WebSocket support (`jsSendBinary`, `goOnTURNMessage`) and `/turn` endpoint. TURN secret generation integrated into `bamgate setup` and invite flow. Wasm binary grew from 414KB to 576KB. All existing tests pass; 42 new tests across credentials (9), dialer (13), and STUN parser (20).
-- **2026-02-12 (session 5)**: macOS (darwin) support — phase 1. The project now compiles and runs on macOS (`GOOS=darwin`). Split all Linux-specific code into platform files with `//go:build` tags: `netlink.go` → Linux netlink syscalls, `netlink_darwin.go` → `ifconfig`/`route`/`sysctl` shell commands for interface management. `nat.go` → Linux nftables, `nat_darwin.go` → macOS PF (`pfctl`) with `com.bamgate` anchor for NAT masquerade. Extracted cross-platform `FindInterfaceForSubnet()` to `iface.go`. Added `tun_linux.go` (`DefaultTUNName = "bamgate0"`) and `tun_darwin.go` (`DefaultTUNName = "utun"` — kernel auto-assigns). Agent uses `tunnel.DefaultTUNName` instead of hardcoded name. Control socket path uses `/var/run/bamgate/` on macOS. CLI commands (`setup`, `install`, `up` foreground) work on macOS with clear messages for not-yet-implemented features (`up -d`, `down` — launchd integration pending). All existing Linux tests pass. Cross-compiles cleanly for `darwin/amd64` and `darwin/arm64`.
-- **2026-02-12 (session 4)**: Automatic IP forwarding and NAT for advertised subnet routes. Added `--accept-routes` opt-in flag — remote subnet routes are no longer installed by default to prevent conflicts when both sides share the same LAN subnet. When a device advertises routes (e.g., `192.168.1.0/24`), remote peers could reach the device itself but not other hosts on the advertised subnet — packets were dropped because Linux doesn't forward between interfaces by default and LAN devices couldn't reply without NAT. Bamgate now automatically enables per-interface IPv4 forwarding via netlink `RTM_SETLINK` with `IFLA_AF_SPEC` > `IFLA_INET_CONF` (avoids `/proc/sys` writes that require `CAP_DAC_OVERRIDE` or root) and sets up nftables MASQUERADE rules using `github.com/google/nftables` (pure Go netlink library, no iptables/nft binaries needed) in a dedicated `bamgate` nftables table. `FindInterfaceForSubnet()` auto-detects the outgoing LAN interface. Previous forwarding state is saved and restored on shutdown. No new capabilities needed — existing `CAP_NET_ADMIN` covers both netlink forwarding and nftables.
-- **2026-02-12 (session 3)**: Automated setup & deployment. New `bamgate setup` command — single interactive wizard that deploys the Cloudflare Worker signaling server, configures the device, and installs the binary with capabilities. Two setup paths: (1) Cloudflare API token — deploys worker on first run, detects existing worker and retrieves config on subsequent runs; (2) invite code — no CF account needed on second device. New `bamgate invite` command generates short-lived invite codes (10 min, single-use) for adding devices to the network. Worker updated with `/invite` (create/redeem) and `/network-info` endpoints using Durable Object SQLite for invite storage and automatic tunnel address assignment. Auth token stored as plain text binding (readable via CF API). Worker assets embedded in Go binary via `//go:embed` (~438KB). New `internal/deploy/` package with Cloudflare REST API v4 client (token verify, accounts, subdomain, worker upload with multipart modules + DO bindings + migrations, worker settings). Config extended with `[cloudflare]` section (api_token, account_id, worker_name). `bamgate init` deprecated in favor of `setup`.
-- **2026-02-12 (session 2)**: UX & operational improvements. Fixed `bamgate init` URL scheme bug (auto-prepend `wss://` for bare hostnames). Added `bamgate up -d` daemon mode (systemctl enable + start) and `bamgate down` (systemctl disable + stop). Fixed systemd service to run as the installing user instead of root — uses `$SUDO_USER` to resolve the real user and sets `User=`/`Group=` in the service file; capabilities granted via `AmbientCapabilities`. Neither `up -d` nor `down` require the user to prefix with sudo (they invoke `sudo systemctl` internally). Non-root TUN configuration via raw netlink syscalls (replaces `exec ip`). Smart control socket path resolution. `bamgate install` command with `--systemd` flag. Redeployed Cloudflare Worker with subnet routing support.
-- **2026-02-12**: Phase 5 complete — CLI polish & resilience. Implemented all 6 work items: Cobra subcommand framework (up/init/status/genkey), interactive `bamgate init` wizard, subnet routing (config + protocol + agent + worker), ICE restart resilience (grace period + 3 retries), `bamgate status` via Unix socket control server, systemd service file. Fixed pre-existing WebRTC test race. All tests pass with `-race`.
-- **2026-02-10**: Fixed AllowedIPs routing bug — exchanged tunnel addresses via signaling, use per-peer `/32` AllowedIPs instead of `0.0.0.0/0`. All 3 peers can now ping each other simultaneously. Released v0.3.0.
-- **2026-02-10**: Phase 3 complete — deployed Cloudflare Worker signaling server. Tested with 3 peers across the internet. Fixed DO hibernation state loss with rehydration from WebSocket attachments. Added bearer token auth.
-- **2026-02-10**: Phase 3 implementation — Cloudflare Worker signaling server. Extracted protocol types to shared `pkg/protocol/` package (TinyGo-compatible). Scaffolded `worker/` with Go/Wasm Durable Object: JS shell with WebSocket Hibernation API bridges to Go hub logic via `syscall/js`. Added bearer token auth to signaling client and agent. Built with TinyGo (408KB Wasm binary). Tested full signaling flow locally with `wrangler dev`: peer join, peers list, offer/answer relay, ICE candidate relay, peer-left notification — all working. Key finding: `no_bundle = true` + `find_additional_modules = true` required to avoid esbuild bundling `wasm_exec.js` (which causes infinite recursion in Workers runtime).
-- **2026-02-10**: End-to-end LAN tunnel verified. Fixed three bugs blocking the tunnel: hub not broadcasting join events to existing peers, offer/answer messages missing WireGuard public keys, and bridge Bind receive loop dying after wireguard-go's BindUpdate cycle. Added `Endpoint` field to `PeerConfig` for Bind routing. Added `PublicKey` field to `OfferMessage`/`AnswerMessage`. Added LAN testing guide (`docs/testing-lan.md`). Released v0.2.0.
-- **2026-02-10**: Phase 2 complete — WireGuard integration. Implemented tunnel package (TUN creation, UAPI config, device lifecycle), bridge package (custom `conn.Bind` over WebRTC data channels), agent orchestrator, CLI `bamgate up` command, standalone signaling hub binary (`bamgate-hub`). Extracted signaling Hub from tests for reuse. 35 tests across all packages, all passing with `-race`.
-- **2026-02-09**: Implemented config package — TOML config management (load/save with BurntSushi/toml, XDG path support, 0600 permissions) and WireGuard key generation (Curve25519 via crypto/curve25519, RFC 7748 clamping). Phase 1 complete.
-- **2026-02-09**: Implemented WebRTC peer connection manager with ICE configuration, unreliable/unordered data channels, SDP offer/answer exchange, and integration tests.
-- **2026-02-09**: Implemented signaling protocol types and WebSocket client with full test suite.
-- **2026-02-09**: Project bootstrapped — architecture doc, scaffolding, README, coding guidelines.
+| Session | Date | Summary |
+|---------|------|---------|
+| 14 | 2026-02-14 | New ㅂ (bieup) logo in yellow/dark grey, Android adaptive icon update |
+| 13 | 2026-02-14 | Show local pushed routes in `bamgate status` header |
+| 12 | 2026-02-14 | Android APK CI pipeline (gomobile AAR -> Gradle -> GitHub release) |
+| 11 | 2026-02-14 | Overhaul install (drop Homebrew, root daemon, launchd), Android Phase A+B (gomobile + Compose app) |
+| 10 | 2026-02-12 | Fix ETXTBSY atomic binary replace, fix systemd SELinux 203/EXEC |
+| 9 | 2026-02-12 | Remove install command, consolidate into setup --force, project logo |
+| 8 | 2026-02-12 | Rename riftgate -> bamgate across 49 files |
+| 7 | 2026-02-12 | Fix ICE restart offer storm (glare resolution), `bamgate version` |
+| 6 | 2026-02-12 | TURN relay over WebSocket (client dialer + server state machine + STUN parser) |
+| 5 | 2026-02-12 | macOS (darwin) support — platform files, PF NAT, ifconfig/route/sysctl |
+| 4 | 2026-02-12 | Auto IP forwarding + nftables NAT, `--accept-routes` opt-in |
+| 3 | 2026-02-12 | `bamgate setup` wizard, `bamgate invite`, worker deploy + invite endpoints |
+| 2 | 2026-02-12 | UX improvements: URL normalization, daemon mode, netlink TUN config, install command |
+| 1 | 2026-02-12 | Phase 5 complete — Cobra CLI, init wizard, subnet routing, ICE restart, status, systemd |
+| 0 | 2026-02-09–10 | Phases 1–3: signaling, WebRTC, WireGuard, bridge, agent, Cloudflare Worker deploy |

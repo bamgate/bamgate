@@ -23,8 +23,10 @@ When creating a release (commit + tag + `gh release create`):
    - Add the new version to the **Releases** table
    - Add a **Changelog** entry for the session
 2. Commit, tag (`git tag vX.Y.Z`), and push with `--tags`
-3. Create the GitHub release with `gh release create` — this triggers GoReleaser
-   via GitHub Actions to build binaries for linux/darwin (amd64 + arm64)
+3. Create the GitHub release with `gh release create` — this triggers GitHub Actions:
+   - **GoReleaser** builds `bamgate` and `bamgate-hub` binaries for linux/darwin
+     (amd64 + arm64) and attaches them to the release
+   - **Android job** builds the AAR + debug APK and attaches the APK to the release
 4. Version is injected into the binary at build time via
    `-ldflags "-X main.version={{.Version}}"` (configured in `.goreleaser.yaml`)
 
@@ -67,7 +69,7 @@ Overridable variables (pass as `make VAR=value` or export in env):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `VERSION` | `git describe --tags --always --dirty` | Version string injected into binary |
+| `VERSION` | `git describe --tags --always --dirty` (falls back to `dev`) | Version string injected into binary |
 | `TINYGO` | `~/.local/tinygo/bin/tinygo` | TinyGo binary path |
 | `GOMOBILE` | `gomobile` | gomobile binary |
 | `OUTPUT_DIR` | `.` | Where CLI binaries are written |
@@ -100,8 +102,8 @@ goimports -w .
 
 ### Cloudflare Worker (TinyGo -> Wasm)
 
-**TinyGo binary location:** `~/.local/tinygo/bin/tinygo` (v0.40.1). The system
-`tinygo` at `/usr/bin/tinygo` is an older version (0.39.0) that lacks `wasm-opt`
+**TinyGo binary location:** `~/.local/tinygo/bin/tinygo`. The system
+`tinygo` at `/usr/bin/tinygo` may be an older version that lacks `wasm-opt`
 — always use the local install.
 
 ```bash
@@ -199,21 +201,32 @@ npx wrangler deploy
 ## Project Structure
 
 ```
-cmd/bamgate/          # CLI entry point (main package)
-cmd/bamgate-hub/      # Standalone signaling hub for local/LAN testing
-install.sh            # Universal install/upgrade script
+cmd/bamgate/           # CLI entry point (main package)
+cmd/bamgate-hub/       # Standalone signaling hub for local/LAN testing
+install.sh             # Universal install/upgrade script
+contrib/               # systemd service file
+docs/                  # Supplementary docs (android-status, testing-lan)
+mobile/                # gomobile binding package (built by `make aar`)
+android/               # Android app (Kotlin/Gradle, built by `make android`)
+third_party/anet/      # Vendored fork of wlynxg/anet (go.mod replace)
 internal/
-  config/              # TOML config management, key generation
-  signaling/           # WebSocket client to CF Worker
-  webrtc/              # RTCPeerConnection, data channel, ICE config
-  tunnel/              # wireguard-go device + TUN interface
-  bridge/              # TUN <-> WebRTC data channel packet forwarding
   agent/               # Top-level orchestrator tying everything together
+  bridge/              # TUN <-> WebRTC data channel packet forwarding
+  config/              # TOML config management, key generation
+  control/             # Control plane server (unix socket)
+  deploy/              # Embedded worker assets + Cloudflare deployment
+    assets/            # app.wasm, wasm_exec.js, worker.mjs (go:embed)
+  signaling/           # WebSocket client to CF Worker
+  tunnel/              # wireguard-go device + TUN interface
+  turn/                # TURN credential generation + WebSocket proxy dialer
+  webrtc/              # RTCPeerConnection, data channel, ICE config
 pkg/protocol/          # Shared signaling protocol types (TinyGo-compatible)
 worker/                # Cloudflare Worker + Durable Object (Go -> Wasm)
   src/worker.mjs       # JS glue: Worker fetch + DO class + Wasm bridge
   hub.go               # Go signaling hub logic (syscall/js callbacks)
   main.go              # TinyGo Wasm entry point
+  turn.go              # Server-side TURN relay state machine
+  stun/                # Minimal STUN/TURN message parser (TinyGo-compatible)
 ```
 
 ## Key Libraries
@@ -221,12 +234,13 @@ worker/                # Cloudflare Worker + Durable Object (Go -> Wasm)
 | Library | Purpose |
 |---------|---------|
 | `github.com/pion/webrtc/v4` | ICE, DTLS, SCTP, data channels |
-| `github.com/pion/turn/v4` | TURN client/server reference |
-| `golang.zx2c4.com/wireguard` | Userspace WireGuard |
-| `golang.zx2c4.com/wireguard/tun` | TUN device management |
-| `nhooyr.io/websocket` | Signaling WebSocket connection |
+| `golang.zx2c4.com/wireguard` | Userspace WireGuard (includes `wireguard/tun`) |
+| `github.com/coder/websocket` | Signaling WebSocket connection (formerly `nhooyr.io/websocket`) |
+| `github.com/spf13/cobra` | CLI command framework |
 | `github.com/BurntSushi/toml` | TOML config parsing |
-| `github.com/syumai/workers` | Evaluated but not used — does not support Durable Objects |
+| `github.com/google/nftables` | Linux firewall / NAT management |
+| `github.com/skip2/go-qrcode` | QR code generation for invite flow |
+| `golang.org/x/crypto` | Cryptographic primitives (curve25519 key generation) |
 
 ## Critical Design Constraints
 
