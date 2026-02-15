@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!--
+    ㅂ (bieup) — round/cute style
+    Yellow #E3D367 on black #1C1E1F background
+  -->
+
+  <!-- Background -->
+  <rect width="128" height="128" rx="16" fill="#1C1E1F"/>
+
+  <!-- Left vertical stroke -->
+  <line x1="30" y1="34" x2="30" y2="94" stroke="#E3D367" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- Right vertical stroke -->
+  <line x1="98" y1="34" x2="98" y2="94" stroke="#E3D367" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- Middle horizontal bar -->
+  <line x1="30" y1="64" x2="98" y2="64" stroke="#E3D367" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- Bottom horizontal bar -->
+  <line x1="30" y1="94" x2="98" y2="94" stroke="#E3D367" stroke-width="14" stroke-linecap="round"/>
+</svg>

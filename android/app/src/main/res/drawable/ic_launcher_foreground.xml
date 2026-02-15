@@ -4,16 +4,26 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Shield shape representing VPN security -->
+    <!-- ㅂ (bieup) — round/cute style, yellow on dark background -->
+    <!-- Safe zone: 18-90 (72dp), symbol centered within -->
+
+    <!-- Left vertical stroke -->
     <path
-        android:fillColor="#E0E0FF"
-        android:pathData="M54,24 L30,34 L30,52 C30,66 40,78 54,82 C68,78 78,66 78,52 L78,34 Z" />
-    <!-- Inner gate/door icon -->
+        android:fillColor="#E3D367"
+        android:pathData="M30,32 C30,28.13 33.13,25 37,25 C40.87,25 44,28.13 44,32 L44,76 C44,79.87 40.87,83 37,83 C33.13,83 30,79.87 30,76 Z" />
+
+    <!-- Right vertical stroke -->
     <path
-        android:fillColor="#1A1A2E"
-        android:pathData="M46,48 L46,68 L62,68 L62,48 C62,43.6 58.4,40 54,40 C49.6,40 46,43.6 46,48 Z" />
-    <!-- Door handle -->
+        android:fillColor="#E3D367"
+        android:pathData="M64,32 C64,28.13 67.13,25 71,25 C74.87,25 78,28.13 78,32 L78,76 C78,79.87 74.87,83 71,83 C67.13,83 64,79.87 64,76 Z" />
+
+    <!-- Middle horizontal bar -->
     <path
-        android:fillColor="#E0E0FF"
-        android:pathData="M57,56 A2,2 0 1,1 57,56.01" />
+        android:fillColor="#E3D367"
+        android:pathData="M30,47 L78,47 L78,61 L30,61 Z" />
+
+    <!-- Bottom horizontal bar -->
+    <path
+        android:fillColor="#E3D367"
+        android:pathData="M30,69 L78,69 L78,83 L30,83 Z" />
 </vector>

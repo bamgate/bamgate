@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="bamgate.svg" alt="bamgate logo" width="200">
+  <img src="logo.png" alt="bamgate logo" width="200">
 </p>
 
 # bamgate
