@@ -6,24 +6,31 @@
     android:viewportHeight="108">
     <!-- ㅂ (bieup) — round/cute style, yellow on dark background -->
     <!-- Safe zone: 18-90 (72dp), symbol centered within -->
+    <!-- Symbol scaled to ~50% of safe zone width for generous padding -->
+    <!-- All endpoints use round caps (capsule shapes) matching SVG stroke-linecap="round" -->
 
-    <!-- Left vertical stroke -->
+    <!-- Stroke parameters: width=6, radius=3 -->
+    <!-- Vertical centers: left x=42, right x=66 -->
+    <!-- Vertical span: y=43 to y=65 -->
+    <!-- Horizontal bars: middle y=54, bottom y=65 -->
+
+    <!-- Left vertical stroke (capsule: center x=42, y=43..65) -->
     <path
         android:fillColor="#E3D367"
-        android:pathData="M30,32 C30,28.13 33.13,25 37,25 C40.87,25 44,28.13 44,32 L44,76 C44,79.87 40.87,83 37,83 C33.13,83 30,79.87 30,76 Z" />
+        android:pathData="M39,43 C39,41.34 40.34,40 42,40 C43.66,40 45,41.34 45,43 L45,65 C45,66.66 43.66,68 42,68 C40.34,68 39,66.66 39,65 Z" />
 
-    <!-- Right vertical stroke -->
+    <!-- Right vertical stroke (capsule: center x=66, y=43..65) -->
     <path
         android:fillColor="#E3D367"
-        android:pathData="M64,32 C64,28.13 67.13,25 71,25 C74.87,25 78,28.13 78,32 L78,76 C78,79.87 74.87,83 71,83 C67.13,83 64,79.87 64,76 Z" />
+        android:pathData="M63,43 C63,41.34 64.34,40 66,40 C67.66,40 69,41.34 69,43 L69,65 C69,66.66 67.66,68 66,68 C64.34,68 63,66.66 63,65 Z" />
 
-    <!-- Middle horizontal bar -->
+    <!-- Middle horizontal bar (capsule: center y=54, x=42..66) -->
     <path
         android:fillColor="#E3D367"
-        android:pathData="M30,47 L78,47 L78,61 L30,61 Z" />
+        android:pathData="M42,51 C40.34,51 39,52.34 39,54 C39,55.66 40.34,57 42,57 L66,57 C67.66,57 69,55.66 69,54 C69,52.34 67.66,51 66,51 Z" />
 
-    <!-- Bottom horizontal bar -->
+    <!-- Bottom horizontal bar (capsule: center y=65, x=42..66) -->
     <path
         android:fillColor="#E3D367"
-        android:pathData="M30,69 L78,69 L78,83 L30,83 Z" />
+        android:pathData="M42,62 C40.34,62 39,63.34 39,65 C39,66.66 40.34,68 42,68 L66,68 C67.66,68 69,66.66 69,65 C69,63.34 67.66,62 66,62 Z" />
 </vector>
