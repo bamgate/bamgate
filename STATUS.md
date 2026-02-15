@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-12 (session 10)
+Last updated: 2026-02-14 (session 11)
 
 ## Current Phase
 
@@ -306,7 +306,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Package | Files | Status |
 |---------|-------|--------|
-| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_setup.go, cmd_invite.go, cmd_init.go, cmd_init_test.go, cmd_status.go, cmd_genkey.go, cmd_install.go | **Implemented + tested** — Cobra subcommands: setup, up, down, invite, status, genkey, install (init deprecated) |
+| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_setup.go, cmd_invite.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go | **Implemented + tested** — Cobra subcommands: setup, up, down, invite, status, genkey, update, uninstall |
 | `cmd/bamgate-hub` | main.go | **Implemented** — standalone signaling server |
 | `internal/agent` | agent.go, agent_test.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration |
 | `internal/control` | server.go, server_test.go | **Implemented + tested** — Unix socket status API |
@@ -338,6 +338,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.6.0 | 2026-02-14 | Overhaul install: drop Homebrew, add install script + self-update + root daemon model, launchd support |
 | v1.5.3 | 2026-02-12 | Fix ETXTBSY when copying over running binary during setup |
 | v1.5.2 | 2026-02-12 | Fix systemd 203/EXEC on Homebrew installs (SELinux user_home_t) |
 | v1.5.1 | 2026-02-12 | Document symlink step for Linux Homebrew users |
@@ -360,6 +361,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 ## Changelog
 
+- **2026-02-14 (session 11)**: Overhaul install model. Drop Homebrew — replace with universal `install.sh` (curl|sh) and `bamgate update` self-update command. Daemon now runs as root via systemd (Linux) and launchd (macOS), eliminating setcap, symlinks, and the re-run-setup-after-upgrade dance. Config moves from `~/.config/bamgate/config.toml` to `/etc/bamgate/config.toml` (auto-migration on `sudo bamgate setup`). New commands: `bamgate update` (self-update from GitHub releases, atomic binary replace, auto-restart service), `bamgate uninstall` (stops service, removes service file/config/binary). launchd support for macOS (`/Library/LaunchDaemons/com.bamgate.bamgate.plist`) — `up -d` and `down` now work on macOS. Removed deprecated `bamgate init` command; shared helpers (`promptString`, `promptYesNo`, `normalizeServerURL`) moved to `cmd_helpers.go`. Simplified systemd service (no User/Group/AmbientCapabilities — root has all caps). Removed Homebrew tap from GoReleaser and CI. Added `make install` target. Android app scaffolding and gomobile bindings added.
 - **2026-02-12 (session 10)**: Fix ETXTBSY ("text file busy") error when `sudo bamgate setup` copies the binary to `/usr/local/bin/bamgate` while a previous copy is still running (e.g., from the systemd service). `copyBinary()` now writes to a temp file in the same directory and does an atomic `os.Rename`, which the kernel allows even for executing binaries. Fix systemd service failing with `status=203/EXEC` on Homebrew-installed binaries. Root cause: Homebrew Cask installs the binary under `/home/linuxbrew/.linuxbrew/Caskroom/...`, and SELinux labels files under `/home` as `user_home_t` — systemd services are denied execution of `user_home_t` binaries. Fix: `installSystemdService()` now detects when the resolved binary path is under `/home/` and copies it to `/usr/local/bin/bamgate` (which receives the correct `bin_t` SELinux label automatically), sets capabilities on the copy, and uses the system path in `ExecStart=`. Non-Homebrew installs are unaffected. Added `copyBinary()` helper for streaming file copy with permissions.
 - **2026-02-12 (session 9)**: Remove `install` command — `setup` now handles everything. When config already exists, `sudo bamgate setup` re-applies Linux capabilities and updates the systemd service path (handles `brew upgrade` gracefully). Added `--force` flag to redo full setup. Platform-aware TUN error messages guide users to `sudo bamgate setup` (Linux) or `sudo bamgate up` (macOS). No longer copies binary to `/usr/local/bin` — works with Homebrew-managed binaries in-place. Fixed auth token prefix `rg_` → `bg_`. Updated systemd service docs URL to `bamgate/bamgate`. Added project logo (SVG + PNG) to README. Add MIT license, Homebrew tap via GoReleaser, and GitHub App-based token for cross-repo formula publishing. Project transferred from `kuuji/bamgate` to `bamgate` GitHub org. GoReleaser `homebrew_casks` section auto-publishes cask to `bamgate/homebrew-tap` on release. Release workflow uses `actions/create-github-app-token` to generate ephemeral tokens (no PAT expiry). Modernized `.goreleaser.yaml`: migrated deprecated `brews` to `homebrew_casks`, `format` to `formats`, split archives by build ID so cask filtering works, added macOS quarantine removal hook for unsigned binaries. Users can now install via `brew install bamgate/tap/bamgate`.
 - **2026-02-12 (session 8)**: Rename project from riftgate to bamgate (밤gate — "night gate", Korean 밤 = night). Full codebase rename across 49 files (318 lines): Go module path, import paths, binary names, CLI commands, string constants (data channel label, TURN realm, TUN interface name, nftables table, PF anchor), config paths (~/.config/bamgate/), control socket paths (/run/bamgate/), HTTP headers (X-Bamgate-*), systemd service, worker config, documentation. Directory renames: cmd/riftgate → cmd/bamgate, cmd/riftgate-hub → cmd/bamgate-hub, contrib/riftgate.service → contrib/bamgate.service. All tests pass, both binaries build cleanly.
