@@ -234,7 +234,7 @@ export class SignalingRoom {
 
   _getAssignedAddresses() {
     this._ensureTables();
-    const rows = [...this.ctx.storage.sql.exec("SELECT address FROM devices ORDER BY address")];
+    const rows = [...this.ctx.storage.sql.exec("SELECT address FROM devices WHERE revoked = 0 ORDER BY address")];
     return rows.map(r => r.address);
   }
 
@@ -428,24 +428,41 @@ export class SignalingRoom {
       return this._jsonError("unauthorized: you are not the owner of this network", 403);
     }
 
-    // Assign tunnel address.
-    const address = this._assignNextAddress();
-    if (!address) {
-      return this._jsonError("no addresses available in subnet", 507);
-    }
+    // Check if a non-revoked device with the same name already exists for this owner.
+    const existing = [...this.ctx.storage.sql.exec(
+      "SELECT device_id, address FROM devices WHERE device_name = ? AND owner_github_id = ? AND revoked = 0",
+      device_name, githubId
+    )];
 
-    // Generate device credentials.
-    const deviceId = crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
     const refreshToken = this._generateRefreshToken();
     const refreshTokenHash = await this._hashToken(refreshToken);
-    const now = Math.floor(Date.now() / 1000);
     const refreshExpiresAt = now + 30 * 24 * 60 * 60; // 30 days.
 
-    this.ctx.storage.sql.exec(
-      `INSERT INTO devices (device_id, device_name, owner_github_id, address, refresh_token_hash,
-        refresh_token_expires_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      deviceId, device_name, githubId, address, refreshTokenHash, refreshExpiresAt, now, now
-    );
+    let deviceId, address;
+
+    if (existing.length > 0) {
+      // Reclaim existing device — reuse its ID and address, reset credentials.
+      deviceId = existing[0].device_id;
+      address = existing[0].address;
+      this.ctx.storage.sql.exec(
+        `UPDATE devices SET refresh_token_hash = ?, refresh_token_expires_at = ?, last_seen_at = ?
+         WHERE device_id = ?`,
+        refreshTokenHash, refreshExpiresAt, now, deviceId
+      );
+    } else {
+      // New device — assign a fresh address and ID.
+      address = this._assignNextAddress();
+      if (!address) {
+        return this._jsonError("no addresses available in subnet", 507);
+      }
+      deviceId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO devices (device_id, device_name, owner_github_id, address, refresh_token_hash,
+          refresh_token_expires_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        deviceId, device_name, githubId, address, refreshTokenHash, refreshExpiresAt, now, now
+      );
+    }
 
     // Get or create TURN secret.
     const turnSecret = this._getOrCreateTURNSecret();

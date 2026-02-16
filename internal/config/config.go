@@ -391,21 +391,19 @@ func applyUserOwnership(path string) {
 // If the file already exists with different permissions (e.g. during migration
 // from the old monolithic 0600 format), the permissions are corrected.
 func writeFile(path string, mode os.FileMode, v interface{}) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return fmt.Errorf("creating file %s: %w", path, err)
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(v); err != nil {
+		return fmt.Errorf("encoding TOML: %w", err)
 	}
-	defer f.Close()
+
+	if err := os.WriteFile(path, buf.Bytes(), mode); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
 
 	// Ensure permissions are correct even if the file already existed
-	// with different permissions (OpenFile only sets mode on creation).
-	if err := f.Chmod(mode); err != nil {
+	// with different permissions (WriteFile only sets mode on creation).
+	if err := os.Chmod(path, mode); err != nil {
 		return fmt.Errorf("setting permissions on %s: %w", path, err)
-	}
-
-	enc := toml.NewEncoder(f)
-	if err := enc.Encode(v); err != nil {
-		return fmt.Errorf("encoding TOML: %w", err)
 	}
 
 	return nil
