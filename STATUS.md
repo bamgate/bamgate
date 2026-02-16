@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-15 (session 17)
+Last updated: 2026-02-15 (session 18)
 
 ## Current Phase
 
@@ -113,6 +113,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.8.2 | 2026-02-15 | Android Custom Tab for OAuth flow |
 | v1.8.1 | 2026-02-15 | Fix config permissions for non-root access, `bamgate config` command |
 | v1.8.0 | 2026-02-15 | GitHub OAuth auth, config split for non-root CLI, `bamgate qr` + `bamgate devices` |
 | v1.7.1 | 2026-02-14 | New logo, Android icon update |
@@ -142,6 +143,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 18 | 2026-02-15 | Android Custom Tab for GitHub OAuth login (opens browser in-app instead of external browser) |
 | 17 | 2026-02-15 | Split config into config.toml (0644) + secrets.toml (0640) so CLI commands work without sudo, `bamgate qr` uses LoadPublicConfig, sudo user gets group read on secrets via SUDO_GID chown, auto-migration of old monolithic config |
 | 16 | 2026-02-15 | GitHub OAuth authentication: replace shared AUTH_TOKEN with GitHub Device Auth + Worker-minted JWTs, device registration/refresh/revoke, `bamgate devices` CLI, mobile bindings update |
 | 15 | 2026-02-15 | (Session context — planning for OAuth transition) |
