@@ -273,11 +273,7 @@ fun SetupScreen(
 
                 OutlinedButton(
                     onClick = {
-                        // Append user_code as query param to pre-populate the code field.
-                        val uri = Uri.parse(verificationUri).buildUpon()
-                            .appendQueryParameter("user_code", userCode)
-                            .build()
-                        val intent = Intent(Intent.ACTION_VIEW, uri)
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(verificationUri))
                         context.startActivity(intent)
                     },
                     modifier = Modifier.fillMaxWidth()

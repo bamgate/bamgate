@@ -324,6 +324,10 @@ func SaveConfig(path string, cfg *Config) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating config directory %s: %w", dir, err)
 	}
+	// Ensure directory is world-readable even if it existed with old 0700 perms.
+	if err := os.Chmod(dir, 0755); err != nil {
+		return fmt.Errorf("setting directory permissions on %s: %w", dir, err)
+	}
 
 	// Write config.toml (world-readable — no secrets).
 	if err := writeFile(path, 0644, toConfigFile(cfg)); err != nil {

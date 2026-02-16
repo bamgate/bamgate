@@ -49,6 +49,7 @@ func init() {
 	rootCmd.AddCommand(downCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(devicesCmd)
+	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(qrCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(uninstallCmd)
