@@ -3,6 +3,7 @@ package com.bamgate.app.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -30,23 +32,34 @@ fun HomeScreen(
     isConnected: Boolean,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    onPeers: () -> Unit
 ) {
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Settings gear icon in top-right corner
-        IconButton(
-            onClick = onSettings,
+        // Top-right icon row: Peers + Settings
+        Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
                 .padding(8.dp)
         ) {
-            Icon(
-                imageVector = Icons.Filled.Settings,
-                contentDescription = "Settings",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (isConnected) {
+                IconButton(onClick = onPeers) {
+                    Icon(
+                        imageVector = Icons.Filled.People,
+                        contentDescription = "Peers",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            IconButton(onClick = onSettings) {
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = "Settings",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         Column(

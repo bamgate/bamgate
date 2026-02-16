@@ -119,6 +119,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.9.1 | 2026-02-16 | Android peer management screen (routes, DNS, search domain checkboxes) |
 | v1.9.0 | 2026-02-16 | Peer capability advertisement (DNS, routes, search domains), per-peer opt-in selections, `bamgate peers` TUI |
 | v1.8.3 | 2026-02-15 | Fix secrets file corruption, reclaim devices by name, reclaim revoked IPs |
 | v1.8.2 | 2026-02-15 | Android Custom Tab for OAuth flow |
@@ -151,7 +152,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
-| 20 | 2026-02-16 | Peer capability advertisement: metadata map on signaling protocol, DNS/search domain config fields, per-peer `[peers.<name>]` selections in config, `bamgate peers` + `bamgate peers configure` TUI (charmbracelet/huh), control plane `/peers/offerings` + `/peers/configure` endpoints, DNS installation via resolvectl (Linux) / /etc/resolver (macOS), Android VPN DNS from peer selections, worker JS shim + Go hub metadata forwarding |
+| 20 | 2026-02-16 | Peer capability advertisement: metadata map on signaling protocol, DNS/search domain config fields, per-peer `[peers.<name>]` selections in config, `bamgate peers` + `bamgate peers configure` TUI (charmbracelet/huh), control plane `/peers/offerings` + `/peers/configure` endpoints, DNS installation via resolvectl (Linux) / /etc/resolver (macOS), Android VPN DNS from peer selections, worker JS shim + Go hub metadata forwarding, Android PeersScreen with checkbox UI for routes/DNS/search domains, sealed Screen navigation in MainActivity |
 | 19 | 2026-02-15 | Fix secrets.toml corruption (encode to buffer before writing), reclaim existing device by name on re-registration instead of creating ghost entries, reclaim revoked device IP addresses |
 | 18 | 2026-02-15 | Android Custom Tab for GitHub OAuth login (opens browser in-app instead of external browser) |
 | 17 | 2026-02-15 | Split config into config.toml (0644) + secrets.toml (0640) so CLI commands work without sudo, `bamgate qr` uses LoadPublicConfig, sudo user gets group read on secrets via SUDO_GID chown, auto-migration of old monolithic config |

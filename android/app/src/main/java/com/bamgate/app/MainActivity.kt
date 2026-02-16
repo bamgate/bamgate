@@ -19,10 +19,18 @@ import com.bamgate.app.data.ConfigRepository
 import com.bamgate.app.service.BamgateVpnService
 import com.bamgate.app.service.VpnStateMonitor
 import com.bamgate.app.ui.HomeScreen
+import com.bamgate.app.ui.PeersScreen
 import com.bamgate.app.ui.SettingsScreen
 import com.bamgate.app.ui.SetupScreen
 import com.bamgate.app.ui.theme.BamgateTheme
 import mobile.Mobile
+
+/** Navigation destinations for the main activity. */
+private sealed class Screen {
+    data object Home : Screen()
+    data object Settings : Screen()
+    data object Peers : Screen()
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -51,7 +59,15 @@ class MainActivity : ComponentActivity() {
                     val hasConfig by configRepo.hasConfig.collectAsState(initial = false)
                     val configToml by configRepo.configToml.collectAsState(initial = null)
                     val isVpnActive by vpnStateMonitor.isVpnActive.collectAsState()
-                    var showSettings by remember { mutableStateOf(false) }
+                    var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
+
+                    // Create a tunnel instance for reading config values.
+                    val toml = configToml
+                    val tunnel = remember(toml) {
+                        toml?.let {
+                            try { Mobile.newTunnel(it) } catch (_: Exception) { null }
+                        }
+                    }
 
                     when {
                         !hasConfig -> {
@@ -60,15 +76,7 @@ class MainActivity : ComponentActivity() {
                                 onSetupComplete = { /* recompose will show HomeScreen */ }
                             )
                         }
-                        showSettings -> {
-                            // Read config values via Go's mobile binding.
-                            val toml = configToml
-                            val tunnel = remember(toml) {
-                                toml?.let {
-                                    try { Mobile.newTunnel(it) } catch (_: Exception) { null }
-                                }
-                            }
-
+                        currentScreen is Screen.Settings -> {
                             SettingsScreen(
                                 configRepo = configRepo,
                                 deviceName = tunnel?.deviceName ?: "unknown",
@@ -76,12 +84,20 @@ class MainActivity : ComponentActivity() {
                                 initialAcceptRoutes = tunnel?.acceptRoutes ?: true,
                                 initialForceRelay = tunnel?.forceRelay ?: false,
                                 isVpnRunning = isVpnActive,
-                                onBack = { showSettings = false },
+                                onBack = { currentScreen = Screen.Home },
                                 onConfigReset = {
-                                    showSettings = false
-                                    // Stop VPN if running
+                                    currentScreen = Screen.Home
                                     stopVpnService()
                                 },
+                                onDisconnectVpn = { stopVpnService() }
+                            )
+                        }
+                        currentScreen is Screen.Peers -> {
+                            PeersScreen(
+                                tunnel = tunnel,
+                                configRepo = configRepo,
+                                isVpnRunning = isVpnActive,
+                                onBack = { currentScreen = Screen.Home },
                                 onDisconnectVpn = { stopVpnService() }
                             )
                         }
@@ -90,7 +106,8 @@ class MainActivity : ComponentActivity() {
                                 isConnected = isVpnActive,
                                 onConnect = { requestVpnPermission() },
                                 onDisconnect = { stopVpnService() },
-                                onSettings = { showSettings = true }
+                                onSettings = { currentScreen = Screen.Settings },
+                                onPeers = { currentScreen = Screen.Peers }
                             )
                         }
                     }
