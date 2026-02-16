@@ -12,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -35,18 +36,16 @@ import androidx.compose.ui.unit.dp
 import com.bamgate.app.data.ConfigRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import mobile.Mobile
 import mobile.Tunnel
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Data class representing a peer's advertised capabilities and the user's
- * current selections, parsed from the JSON returned by tunnel.getPeerOfferings().
+ * Immutable snapshot of a peer's advertised capabilities and current
+ * server-side accepted selections.
  */
 private data class PeerOffering(
     val peerId: String,
@@ -55,9 +54,19 @@ private data class PeerOffering(
     val advertisedRoutes: List<String>,
     val advertisedDns: List<String>,
     val advertisedDnsSearch: List<String>,
-    val acceptedRoutes: MutableList<String>,
-    val acceptedDns: MutableList<String>,
-    val acceptedDnsSearch: MutableList<String>
+    val acceptedRoutes: Set<String>,
+    val acceptedDns: Set<String>,
+    val acceptedDnsSearch: Set<String>
+)
+
+/**
+ * Immutable local selections for a single peer. Replaced (not mutated)
+ * on every checkbox toggle so Compose detects the change.
+ */
+private data class PeerSelections(
+    val routes: Set<String>,
+    val dns: Set<String>,
+    val dnsSearch: Set<String>
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,56 +82,114 @@ fun PeersScreen(
     var offerings by remember { mutableStateOf<List<PeerOffering>>(emptyList()) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    // Poll peer offerings periodically (peers can connect/disconnect).
-    LaunchedEffect(tunnel) {
+    // Local selections — keyed by peerId. Initialised from the server's
+    // accepted selections when offerings are first loaded, then only
+    // modified by checkbox toggles (no network calls until Apply).
+    var localSelections by remember { mutableStateOf<Map<String, PeerSelections>>(emptyMap()) }
+    var hasChanges by remember { mutableStateOf(false) }
+    var applying by remember { mutableStateOf(false) }
+
+    // Poll peer offerings periodically, but pause while the user has
+    // unsaved edits so we don't overwrite their checkbox state.
+    LaunchedEffect(tunnel, hasChanges) {
         while (isActive) {
-            if (tunnel != null) {
+            if (tunnel != null && !hasChanges) {
                 try {
                     val json = withContext(Dispatchers.IO) {
                         tunnel.peerOfferings
                     }
-                    offerings = parsePeerOfferings(json)
+                    val parsed = parsePeerOfferings(json).sortedBy { it.peerId }
+                    offerings = parsed
+
+                    // Initialise local selections for new peers only,
+                    // preserving existing entries.
+                    val updated = localSelections.toMutableMap()
+                    for (peer in parsed) {
+                        if (peer.peerId !in updated) {
+                            updated[peer.peerId] = PeerSelections(
+                                routes = peer.acceptedRoutes,
+                                dns = peer.acceptedDns,
+                                dnsSearch = peer.acceptedDnsSearch
+                            )
+                        }
+                    }
+                    // Remove peers that are no longer present.
+                    val currentIds = parsed.map { it.peerId }.toSet()
+                    updated.keys.retainAll(currentIds)
+
+                    localSelections = updated
                     errorMessage = null
                 } catch (e: Exception) {
                     errorMessage = e.message
                 }
-            } else {
-                offerings = emptyList()
             }
             delay(3000)
         }
     }
 
-    // Saves the current selections for a peer to the Go tunnel and persists config.
-    fun saveSelections(peer: PeerOffering) {
+    // Toggle a single item in a peer's local selections.
+    fun toggle(peerId: String, category: String, item: String, checked: Boolean) {
+        val sel = localSelections[peerId] ?: return
+        val newSel = when (category) {
+            "routes" -> sel.copy(
+                routes = if (checked) sel.routes + item else sel.routes - item
+            )
+            "dns" -> sel.copy(
+                dns = if (checked) sel.dns + item else sel.dns - item
+            )
+            "dns_search" -> sel.copy(
+                dnsSearch = if (checked) sel.dnsSearch + item else sel.dnsSearch - item
+            )
+            else -> return
+        }
+        localSelections = localSelections + (peerId to newSel)
+
+        // Recheck whether any peer has unsaved changes.
+        hasChanges = offerings.any { peer ->
+            val s = localSelections[peer.peerId] ?: return@any false
+            s.routes != peer.acceptedRoutes ||
+                s.dns != peer.acceptedDns ||
+                s.dnsSearch != peer.acceptedDnsSearch
+        }
+    }
+
+    // Apply all local selections to the Go tunnel, persist config, and reconnect.
+    fun applySelections() {
+        applying = true
         scope.launch {
             try {
-                val selectionsJson = JSONObject().apply {
-                    put("routes", JSONArray(peer.acceptedRoutes))
-                    put("dns", JSONArray(peer.acceptedDns))
-                    put("dns_search", JSONArray(peer.acceptedDnsSearch))
-                }.toString()
+                for (peer in offerings) {
+                    val sel = localSelections[peer.peerId] ?: continue
+                    val selectionsJson = JSONObject().apply {
+                        put("routes", JSONArray(sel.routes.toList()))
+                        put("dns", JSONArray(sel.dns.toList()))
+                        put("dns_search", JSONArray(sel.dnsSearch.toList()))
+                    }.toString()
 
-                withContext(Dispatchers.IO) {
-                    tunnel?.configurePeer(peer.peerId, selectionsJson)
+                    withContext(Dispatchers.IO) {
+                        tunnel?.configurePeer(peer.peerId, selectionsJson)
+                    }
                 }
 
-                // Persist the updated config.
-                val currentToml = configRepo.configToml.first() ?: return@launch
-                val tempTunnel = withContext(Dispatchers.IO) {
-                    Mobile.newTunnel(currentToml)
-                }
+                // Persist the live tunnel's config (which now includes the
+                // updated peer selections) to DataStore.
                 val canonical = withContext(Dispatchers.IO) {
-                    tempTunnel.updateConfig(currentToml)
-                }
+                    tunnel?.config ?: return@withContext null
+                } ?: return@launch
                 configRepo.saveConfig(canonical)
+
+                hasChanges = false
+                errorMessage = null
 
                 // Disconnect so the VPN reconnects with new DNS/routes.
                 if (isVpnRunning) {
                     onDisconnectVpn()
+                    onBack()
                 }
             } catch (e: Exception) {
                 errorMessage = e.message
+            } finally {
+                applying = false
             }
         }
     }
@@ -171,10 +238,26 @@ fun PeersScreen(
                         HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
                     }
 
+                    val sel = localSelections[peer.peerId]
                     PeerSection(
                         peer = peer,
-                        onSelectionChanged = { saveSelections(peer) }
+                        selections = sel,
+                        onToggle = { category, item, checked ->
+                            toggle(peer.peerId, category, item, checked)
+                        }
                     )
+                }
+
+                // Apply & Reconnect button
+                if (hasChanges) {
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(
+                        onClick = { applySelections() },
+                        enabled = !applying,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (applying) "Applying..." else "Apply & Reconnect")
+                    }
                 }
             }
 
@@ -197,7 +280,8 @@ fun PeersScreen(
 @Composable
 private fun PeerSection(
     peer: PeerOffering,
-    onSelectionChanged: () -> Unit
+    selections: PeerSelections?,
+    onToggle: (category: String, item: String, checked: Boolean) -> Unit
 ) {
     // Peer header
     Column(modifier = Modifier.padding(vertical = 8.dp)) {
@@ -247,12 +331,8 @@ private fun PeerSection(
         for (route in peer.advertisedRoutes) {
             CheckboxRow(
                 label = route,
-                checked = route in peer.acceptedRoutes,
-                onCheckedChange = { checked ->
-                    if (checked) peer.acceptedRoutes.add(route)
-                    else peer.acceptedRoutes.remove(route)
-                    onSelectionChanged()
-                }
+                checked = selections?.routes?.contains(route) == true,
+                onCheckedChange = { checked -> onToggle("routes", route, checked) }
             )
         }
     }
@@ -263,12 +343,8 @@ private fun PeerSection(
         for (dns in peer.advertisedDns) {
             CheckboxRow(
                 label = dns,
-                checked = dns in peer.acceptedDns,
-                onCheckedChange = { checked ->
-                    if (checked) peer.acceptedDns.add(dns)
-                    else peer.acceptedDns.remove(dns)
-                    onSelectionChanged()
-                }
+                checked = selections?.dns?.contains(dns) == true,
+                onCheckedChange = { checked -> onToggle("dns", dns, checked) }
             )
         }
     }
@@ -279,12 +355,8 @@ private fun PeerSection(
         for (domain in peer.advertisedDnsSearch) {
             CheckboxRow(
                 label = domain,
-                checked = domain in peer.acceptedDnsSearch,
-                onCheckedChange = { checked ->
-                    if (checked) peer.acceptedDnsSearch.add(domain)
-                    else peer.acceptedDnsSearch.remove(domain)
-                    onSelectionChanged()
-                }
+                checked = selections?.dnsSearch?.contains(domain) == true,
+                onCheckedChange = { checked -> onToggle("dns_search", domain, checked) }
             )
         }
     }
@@ -346,9 +418,9 @@ private fun parsePeerOfferings(json: String): List<PeerOffering> {
                 advertisedRoutes = jsonArrayToList(advertised.optJSONArray("routes")),
                 advertisedDns = jsonArrayToList(advertised.optJSONArray("dns")),
                 advertisedDnsSearch = jsonArrayToList(advertised.optJSONArray("dns_search")),
-                acceptedRoutes = jsonArrayToList(accepted.optJSONArray("routes")).toMutableList(),
-                acceptedDns = jsonArrayToList(accepted.optJSONArray("dns")).toMutableList(),
-                acceptedDnsSearch = jsonArrayToList(accepted.optJSONArray("dns_search")).toMutableList()
+                acceptedRoutes = jsonArrayToList(accepted.optJSONArray("routes")).toSet(),
+                acceptedDns = jsonArrayToList(accepted.optJSONArray("dns")).toSet(),
+                acceptedDnsSearch = jsonArrayToList(accepted.optJSONArray("dns_search")).toSet()
             )
         )
     }

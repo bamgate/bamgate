@@ -51,6 +51,15 @@ type SocketProtector interface {
 // asynchronously.
 type RouteUpdateFunc func(routes []string)
 
+// TokenUpdateFunc is called when the agent rotates the refresh token during
+// JWT refresh. On platforms without direct filesystem access (e.g. Android),
+// this callback is used to persist the new token to the platform's secure
+// storage (DataStore, Keychain, etc.).
+//
+// The callback receives the new TOML config string with the rotated token
+// already applied. The callback must not block.
+type TokenUpdateFunc func(configTOML string)
+
 // Option configures optional Agent behavior.
 type Option func(*options)
 
@@ -58,6 +67,7 @@ type options struct {
 	tunFD               int             // if > 0, use this FD instead of creating a TUN
 	socketProtector     SocketProtector // optional callback to protect sockets from VPN routing
 	routeUpdateCallback RouteUpdateFunc // optional callback when new peer routes are discovered
+	tokenUpdateCallback TokenUpdateFunc // optional callback when refresh token is rotated
 	configPath          string          // path to config file for persisting rotated refresh tokens
 }
 
@@ -84,6 +94,14 @@ func WithSocketProtector(p SocketProtector) Option {
 // subnets is routed through the TUN interface.
 func WithRouteUpdateCallback(fn RouteUpdateFunc) Option {
 	return func(o *options) { o.routeUpdateCallback = fn }
+}
+
+// WithTokenUpdateCallback sets a callback that fires when the agent rotates
+// the refresh token during JWT refresh. On Android, this is used to persist
+// the updated config to DataStore since the agent doesn't have direct
+// filesystem access to the config file.
+func WithTokenUpdateCallback(fn TokenUpdateFunc) Option {
+	return func(o *options) { o.tokenUpdateCallback = fn }
 }
 
 // WithConfigPath sets the config file path so the agent can persist rotated
@@ -262,6 +280,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.ctrlSrv = control.NewServer(control.ResolveSocketPath(), a.Status, a.log)
 	a.ctrlSrv.SetOfferingsProvider(a.PeerOfferings)
 	a.ctrlSrv.SetConfigureFunc(a.ConfigurePeer)
+	a.ctrlSrv.SetTokenProvider(a.tokenProvider)
 	if err := a.ctrlSrv.Start(); err != nil {
 		a.log.Warn("control server failed to start (status command will be unavailable)", "error", err)
 		// Non-fatal — agent can run without the control server.
@@ -1223,12 +1242,23 @@ func (a *Agent) refreshJWT(ctx context.Context) error {
 	// Rotate the refresh token in config.
 	a.cfg.Network.RefreshToken = resp.RefreshToken
 
-	// Persist immediately so we don't lose the rotated token on crash.
+	// Persist the rotated token immediately so we don't lose it on crash.
 	if a.configPath != "" {
 		if err := config.SaveSecrets(a.configPath, a.cfg); err != nil {
 			a.log.Error("persisting rotated refresh token", "error", err)
 			// Non-fatal — the agent can continue with the in-memory token.
 			// The token will be persisted on the next successful refresh.
+		}
+	}
+
+	// On platforms without direct filesystem access (Android), notify via
+	// callback so the host app can persist the updated config.
+	if a.opts.tokenUpdateCallback != nil {
+		toml, err := config.MarshalTOML(a.cfg)
+		if err != nil {
+			a.log.Error("marshaling config for token update callback", "error", err)
+		} else {
+			a.opts.tokenUpdateCallback(toml)
 		}
 	}
 

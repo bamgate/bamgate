@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="signature_yellow">#E3D367</color>
+    <color name="dark_background">#1C1E1F</color>
+    <color name="bg_dim">#21282C</color>
+    <color name="fg">#E1E2E3</color>
+    <color name="green">#9CD57B</color>
+    <color name="red">#F76C7C</color>
+    <color name="blue">#78CEE9</color>
+    <color name="purple">#BAA0F8</color>
+    <color name="gray">#82878B</color>
+</resources>

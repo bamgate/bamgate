@@ -57,6 +57,16 @@ type RouteUpdateCallback interface {
 	OnRoutesUpdated(routesJSON string)
 }
 
+// TokenUpdateCallback is called when the Go agent rotates the refresh token
+// during JWT refresh. The Android app must persist the updated config to
+// DataStore so the new token survives app restarts.
+//
+// The configTOML parameter is the full TOML config string with the rotated
+// token already applied. The callback must not block.
+type TokenUpdateCallback interface {
+	OnTokenUpdated(configTOML string)
+}
+
 // Tunnel represents a bamgate VPN tunnel instance. Create one with
 // NewTunnel(), configure it, then call Start() to connect.
 type Tunnel struct {
@@ -66,6 +76,7 @@ type Tunnel struct {
 	logger        Logger
 	protector     SocketProtector
 	routeCallback RouteUpdateCallback
+	tokenCallback TokenUpdateCallback
 
 	mu      sync.Mutex
 	running bool
@@ -121,6 +132,14 @@ func (t *Tunnel) SetRouteUpdateCallback(cb RouteUpdateCallback) {
 	t.routeCallback = cb
 }
 
+// SetTokenUpdateCallback sets a callback that fires when the agent rotates
+// the refresh token during JWT refresh. On Android, the VPN service should
+// persist the updated config to DataStore so the new token survives app
+// restarts. Must be called before Start().
+func (t *Tunnel) SetTokenUpdateCallback(cb TokenUpdateCallback) {
+	t.tokenCallback = cb
+}
+
 // Start begins the VPN connection using the given TUN file descriptor.
 // The TUN FD should come from Android's VpnService.Builder.establish().
 //
@@ -166,6 +185,13 @@ func (t *Tunnel) Start(tunFD int) error {
 				return
 			}
 			cb.OnRoutesUpdated(string(routesJSON))
+		}))
+	}
+
+	if t.tokenCallback != nil {
+		cb := t.tokenCallback // capture for closure
+		opts = append(opts, agent.WithTokenUpdateCallback(func(configTOML string) {
+			cb.OnTokenUpdated(configTOML)
 		}))
 	}
 
@@ -357,6 +383,17 @@ func (t *Tunnel) GetDNSSearchDomains() string {
 // GetServerURL returns the signaling server URL from the config.
 func (t *Tunnel) GetServerURL() string {
 	return t.cfg.Network.ServerURL
+}
+
+// GetConfig returns the tunnel's current in-memory configuration as a TOML
+// string. This includes any changes made via ConfigurePeer() that haven't
+// been persisted yet. The caller can save this to DataStore.
+func (t *Tunnel) GetConfig() (string, error) {
+	toml, err := config.MarshalTOML(t.cfg)
+	if err != nil {
+		return "", fmt.Errorf("marshaling config: %w", err)
+	}
+	return toml, nil
 }
 
 // UpdateConfig applies a new TOML configuration to the tunnel. The new config

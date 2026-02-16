@@ -46,7 +46,6 @@ fun SettingsScreen(
     configRepo: ConfigRepository,
     deviceName: String,
     serverURL: String,
-    initialAcceptRoutes: Boolean,
     initialForceRelay: Boolean,
     isVpnRunning: Boolean,
     onBack: () -> Unit,
@@ -54,7 +53,6 @@ fun SettingsScreen(
     onDisconnectVpn: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    var acceptRoutes by remember { mutableStateOf(initialAcceptRoutes) }
     var forceRelay by remember { mutableStateOf(initialForceRelay) }
     var showResetDialog by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -69,14 +67,7 @@ fun SettingsScreen(
                     Mobile.newTunnel(currentToml)
                 }
 
-                // Build updated TOML by parsing, modifying the field, and re-marshaling.
-                // We modify the TOML text directly since the Go side handles the
-                // round-trip via UpdateConfig.
-                val updatedToml = when (field) {
-                    "accept_routes" -> updateTomlBool(currentToml, "accept_routes", value)
-                    "force_relay" -> updateTomlBool(currentToml, "force_relay", value)
-                    else -> currentToml
-                }
+                val updatedToml = updateTomlBool(currentToml, field, value)
 
                 // Send through Go for validation and canonical re-marshaling.
                 val canonical = withContext(Dispatchers.IO) {
@@ -92,7 +83,6 @@ fun SettingsScreen(
                 errorMessage = e.message
                 // Revert the UI toggle on failure
                 when (field) {
-                    "accept_routes" -> acceptRoutes = !value
                     "force_relay" -> forceRelay = !value
                 }
             }
@@ -134,25 +124,13 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
-            // --- Routing Section ---
+            // --- Connection Section ---
             Text(
-                text = "Routing",
+                text = "Connection",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(bottom = 8.dp)
             )
-
-            ToggleRow(
-                title = "Accept Routes",
-                description = "Install subnet routes advertised by remote peers (e.g. home LAN access).",
-                checked = acceptRoutes,
-                onCheckedChange = { newValue ->
-                    acceptRoutes = newValue
-                    updateToggle("accept_routes", newValue)
-                }
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
 
             ToggleRow(
                 title = "Force Relay",

@@ -22,6 +22,7 @@ import mobile.Mobile
 import mobile.Logger as GoLogger
 import mobile.RouteUpdateCallback as GoRouteUpdateCallback
 import mobile.SocketProtector as GoSocketProtector
+import mobile.TokenUpdateCallback as GoTokenUpdateCallback
 import org.json.JSONArray
 
 class BamgateVpnService : VpnService() {
@@ -85,6 +86,7 @@ class BamgateVpnService : VpnService() {
                 // Create the Go tunnel.
                 val t = Mobile.newTunnel(configToml)
                 tunnel = t
+                TunnelHolder.set(t)
 
                 // Set up logging.
                 t.setLogger(object : GoLogger {
@@ -139,6 +141,23 @@ class BamgateVpnService : VpnService() {
                         // tunnel coroutine to handle the restart.
                         Log.i(TAG, "Requesting tunnel restart for new routes")
                         t.stop()
+                    }
+                })
+
+                // Set up token update callback. When the Go agent rotates the
+                // refresh token during JWT refresh, we persist the updated
+                // config to DataStore so the new token survives app restarts.
+                t.setTokenUpdateCallback(object : GoTokenUpdateCallback {
+                    override fun onTokenUpdated(configTOML: String?) {
+                        if (configTOML == null) return
+                        Log.i(TAG, "Refresh token rotated, persisting to DataStore")
+                        serviceScope.launch {
+                            try {
+                                configRepo.saveConfig(configTOML)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to persist rotated token", e)
+                            }
+                        }
                     }
                 })
 
@@ -286,6 +305,7 @@ class BamgateVpnService : VpnService() {
         // closes it when the tunnel stops — we must not double-close.
         tunPfd?.close()
         tunPfd = null
+        TunnelHolder.clear()
         tunnel = null
     }
 

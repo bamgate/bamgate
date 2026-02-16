@@ -10,13 +10,41 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme()
-private val LightColorScheme = lightColorScheme()
+private val DarkColorScheme = darkColorScheme(
+    primary = Yellow,
+    secondary = Blue,
+    tertiary = Purple,
+    background = Black,
+    surface = BgDim,
+    error = Red,
+    onPrimary = Black,
+    onSecondary = Black,
+    onTertiary = Black,
+    onBackground = Fg,
+    onSurface = Fg,
+    onError = Black,
+)
+
+private val LightColorScheme = lightColorScheme(
+    primary = Yellow,
+    secondary = Blue,
+    tertiary = Purple,
+    background = Black, // Enforce dark theme look even in light mode for consistency
+    surface = BgDim,
+    error = Red,
+    onPrimary = Black,
+    onSecondary = Black,
+    onTertiary = Black,
+    onBackground = Fg,
+    onSurface = Fg,
+    onError = Black,
+)
 
 @Composable
 fun BamgateTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    // Dynamic color is available on Android 12+
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

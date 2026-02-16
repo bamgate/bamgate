@@ -111,6 +111,9 @@ type ConfigureRequest struct {
 // ConfigureFunc applies per-peer selections and persists them to config.
 type ConfigureFunc func(req ConfigureRequest) error
 
+// TokenProvider returns the current JWT access token from the running agent.
+type TokenProvider func() string
+
 // Server is an HTTP server that listens on a Unix domain socket and
 // serves the agent's status as JSON.
 type Server struct {
@@ -118,6 +121,7 @@ type Server struct {
 	provider    StatusProvider
 	offerings   OfferingsProvider
 	configureFn ConfigureFunc
+	tokenFn     TokenProvider
 	log         *slog.Logger
 	listener    net.Listener
 	httpServer  *http.Server
@@ -143,6 +147,11 @@ func (s *Server) SetOfferingsProvider(fn OfferingsProvider) {
 // SetConfigureFunc sets the function used to handle POST /peers/configure.
 func (s *Server) SetConfigureFunc(fn ConfigureFunc) {
 	s.configureFn = fn
+}
+
+// SetTokenProvider sets the function used to serve GET /auth/token.
+func (s *Server) SetTokenProvider(fn TokenProvider) {
+	s.tokenFn = fn
 }
 
 // Start begins listening on the Unix socket and serving HTTP requests.
@@ -174,6 +183,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("GET /peers/offerings", s.handlePeerOfferings)
 	mux.HandleFunc("POST /peers/configure", s.handlePeerConfigure)
+	mux.HandleFunc("GET /auth/token", s.handleAuthToken)
 
 	s.httpServer = &http.Server{Handler: mux}
 
@@ -256,6 +266,26 @@ func (s *Server) handlePeerConfigure(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// handleAuthToken responds with the current JWT access token from the daemon.
+// CLI commands that need to call the server API (e.g. "bamgate devices") use
+// this to borrow the daemon's token instead of doing their own refresh, which
+// would rotate the single-use refresh token and risk losing it.
+func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
+	if s.tokenFn == nil {
+		http.Error(w, "token not available", http.StatusNotImplemented)
+		return
+	}
+
+	token := s.tokenFn()
+	if token == "" {
+		http.Error(w, "no token available (not authenticated yet)", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"access_token": token})
 }
 
 // FetchStatus connects to a running control server and returns the status.
@@ -348,4 +378,39 @@ func SendConfigure(socketPath string, req ConfigureRequest) error {
 	}
 
 	return nil
+}
+
+// FetchToken connects to a running control server and returns the daemon's
+// current JWT access token. CLI commands use this to borrow the daemon's
+// token instead of doing their own refresh (which would rotate the
+// single-use refresh token and risk losing it if the CLI can't persist).
+func FetchToken(socketPath string) (string, error) {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get("http://bamgate/auth/token")
+	if err != nil {
+		return "", fmt.Errorf("connecting to control socket: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("fetching token (status %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var result struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding token response: %w", err)
+	}
+
+	return result.AccessToken, nil
 }

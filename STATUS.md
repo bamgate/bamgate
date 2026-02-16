@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-16 (session 20)
+Last updated: 2026-02-16 (session 21)
 
 ## Current Phase
 
@@ -119,6 +119,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.10.0 | 2026-02-16 | CLI theming, token borrowing from daemon, Android theme + PeersScreen rework, token rotation callback |
 | v1.9.1 | 2026-02-16 | Android peer management screen (routes, DNS, search domain checkboxes) |
 | v1.9.0 | 2026-02-16 | Peer capability advertisement (DNS, routes, search domains), per-peer opt-in selections, `bamgate peers` TUI |
 | v1.8.3 | 2026-02-15 | Fix secrets file corruption, reclaim devices by name, reclaim revoked IPs |
@@ -152,6 +153,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 21 | 2026-02-16 | CLI theming (lipgloss palette, colored status/peers/devices output, custom huh theme), token borrowing from daemon via `GET /auth/token` control socket endpoint, `TokenUpdateCallback` for Android refresh token persistence, `TunnelHolder` singleton for VPN service/UI tunnel sharing, PeersScreen rework (immutable state, batched Apply & Reconnect), Android dark theme with brand palette, remove deprecated `accept_routes` toggle, mobile `GetConfig()` method |
 | 20 | 2026-02-16 | Peer capability advertisement: metadata map on signaling protocol, DNS/search domain config fields, per-peer `[peers.<name>]` selections in config, `bamgate peers` + `bamgate peers configure` TUI (charmbracelet/huh), control plane `/peers/offerings` + `/peers/configure` endpoints, DNS installation via resolvectl (Linux) / /etc/resolver (macOS), Android VPN DNS from peer selections, worker JS shim + Go hub metadata forwarding, Android PeersScreen with checkbox UI for routes/DNS/search domains, sealed Screen navigation in MainActivity |
 | 19 | 2026-02-15 | Fix secrets.toml corruption (encode to buffer before writing), reclaim existing device by name on re-registration instead of creating ghost entries, reclaim revoked device IP addresses |
 | 18 | 2026-02-15 | Android Custom Tab for GitHub OAuth login (opens browser in-app instead of external browser) |

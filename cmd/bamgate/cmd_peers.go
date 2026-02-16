@@ -50,18 +50,18 @@ func runPeers(cmd *cobra.Command, args []string) error {
 		if i > 0 {
 			fmt.Println()
 		}
-		fmt.Fprintf(os.Stdout, "Peer:      %s\n", o.PeerID)
-		fmt.Fprintf(os.Stdout, "Address:   %s\n", o.Address)
-		fmt.Fprintf(os.Stdout, "State:     %s\n", o.State)
+		fmt.Fprintf(os.Stdout, "%s      %s\n", styleKey.Render("Peer:"), o.PeerID)
+		fmt.Fprintf(os.Stdout, "%s   %s\n", styleKey.Render("Address:"), o.Address)
+		fmt.Fprintf(os.Stdout, "%s     %s\n", styleKey.Render("State:"), o.State)
 
 		// Routes
 		if len(o.Advertised.Routes) > 0 {
-			fmt.Fprintf(os.Stdout, "\n  Routes (advertised):\n")
+			fmt.Fprintf(os.Stdout, "\n  %s\n", styleHeader.Render("Routes (advertised):"))
 			for _, r := range o.Advertised.Routes {
 				accepted := contains(o.Accepted.Routes, r)
 				marker := " "
 				if accepted {
-					marker = "*"
+					marker = styleActive.Render("*")
 				}
 				fmt.Fprintf(os.Stdout, "    [%s] %s\n", marker, r)
 			}
@@ -69,12 +69,12 @@ func runPeers(cmd *cobra.Command, args []string) error {
 
 		// DNS
 		if len(o.Advertised.DNS) > 0 {
-			fmt.Fprintf(os.Stdout, "\n  DNS Servers (advertised):\n")
+			fmt.Fprintf(os.Stdout, "\n  %s\n", styleHeader.Render("DNS Servers (advertised):"))
 			for _, d := range o.Advertised.DNS {
 				accepted := contains(o.Accepted.DNS, d)
 				marker := " "
 				if accepted {
-					marker = "*"
+					marker = styleActive.Render("*")
 				}
 				fmt.Fprintf(os.Stdout, "    [%s] %s\n", marker, d)
 			}
@@ -82,12 +82,12 @@ func runPeers(cmd *cobra.Command, args []string) error {
 
 		// Search domains
 		if len(o.Advertised.DNSSearch) > 0 {
-			fmt.Fprintf(os.Stdout, "\n  Search Domains (advertised):\n")
+			fmt.Fprintf(os.Stdout, "\n  %s\n", styleHeader.Render("Search Domains (advertised):"))
 			for _, s := range o.Advertised.DNSSearch {
 				accepted := contains(o.Accepted.DNSSearch, s)
 				marker := " "
 				if accepted {
-					marker = "*"
+					marker = styleActive.Render("*")
 				}
 				fmt.Fprintf(os.Stdout, "    [%s] %s\n", marker, s)
 			}
@@ -192,7 +192,7 @@ func runPeersConfigure(cmd *cobra.Command, args []string) error {
 
 		form := huh.NewForm(
 			huh.NewGroup(formFields...),
-		)
+		).WithTheme(customHuhTheme())
 
 		if err := form.Run(); err != nil {
 			return fmt.Errorf("form cancelled: %w", err)

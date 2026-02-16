@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.bamgate.app.data.ConfigRepository
 import com.bamgate.app.service.BamgateVpnService
+import com.bamgate.app.service.TunnelHolder
 import com.bamgate.app.service.VpnStateMonitor
 import com.bamgate.app.ui.HomeScreen
 import com.bamgate.app.ui.PeersScreen
@@ -81,7 +82,6 @@ class MainActivity : ComponentActivity() {
                                 configRepo = configRepo,
                                 deviceName = tunnel?.deviceName ?: "unknown",
                                 serverURL = tunnel?.serverURL ?: "unknown",
-                                initialAcceptRoutes = tunnel?.acceptRoutes ?: true,
                                 initialForceRelay = tunnel?.forceRelay ?: false,
                                 isVpnRunning = isVpnActive,
                                 onBack = { currentScreen = Screen.Home },
@@ -94,7 +94,7 @@ class MainActivity : ComponentActivity() {
                         }
                         currentScreen is Screen.Peers -> {
                             PeersScreen(
-                                tunnel = tunnel,
+                                tunnel = TunnelHolder.tunnel,
                                 configRepo = configRepo,
                                 isVpnRunning = isVpnActive,
                                 onBack = { currentScreen = Screen.Home },

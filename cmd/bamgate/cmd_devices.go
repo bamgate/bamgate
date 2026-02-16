@@ -12,6 +12,7 @@ import (
 
 	"github.com/kuuji/bamgate/internal/auth"
 	"github.com/kuuji/bamgate/internal/config"
+	"github.com/kuuji/bamgate/internal/control"
 )
 
 var devicesCmd = &cobra.Command{
@@ -50,9 +51,12 @@ func httpBaseURL(serverURL string) string {
 	return u
 }
 
-// getJWT loads the config, refreshes the JWT, and returns the access token
-// along with the HTTP base URL and config. The rotated refresh token is
-// persisted back to the config file.
+// getJWT borrows the current JWT access token from the running bamgate daemon
+// via its control socket. This avoids doing a token refresh (which rotates the
+// single-use refresh token and requires root to persist the new one).
+//
+// If the daemon is not running, it falls back to loading the config and
+// refreshing the token directly (with a warning about persistence).
 func getJWT(cfgPath string) (jwt, baseURL string, cfg *config.Config, err error) {
 	cfg, err = config.LoadConfig(cfgPath)
 	if err != nil {
@@ -67,6 +71,17 @@ func getJWT(cfgPath string) (jwt, baseURL string, cfg *config.Config, err error)
 	}
 
 	baseURL = httpBaseURL(cfg.Network.ServerURL)
+
+	// Try to borrow the JWT from the running daemon first.
+	socketPath := control.ResolveSocketPath()
+	token, err := control.FetchToken(socketPath)
+	if err == nil && token != "" {
+		return token, baseURL, cfg, nil
+	}
+
+	// Daemon not running — fall back to direct refresh.
+	fmt.Fprintf(os.Stderr, "Warning: bamgate daemon is not running. Refreshing token directly.\n")
+	fmt.Fprintf(os.Stderr, "  This rotates the refresh token. Run 'bamgate up' to avoid this.\n")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -110,9 +125,9 @@ func runDevicesList(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(w, "DEVICE ID\tNAME\tADDRESS\tSTATUS\tCREATED\tLAST SEEN")
 
 	for _, d := range result.Devices {
-		status := "active"
+		status := styleActive.Render("active")
 		if d.Revoked {
-			status = "revoked"
+			status = styleRevoked.Render("revoked")
 		}
 
 		// Mark this device.

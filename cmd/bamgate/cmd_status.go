@@ -25,16 +25,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	// Print header.
-	fmt.Fprintf(os.Stdout, "Device:    %s\n", status.Device)
-	fmt.Fprintf(os.Stdout, "Address:   %s\n", status.Address)
+	fmt.Fprintf(os.Stdout, "%s    %s\n", styleKey.Render("Device:"), status.Device)
+	fmt.Fprintf(os.Stdout, "%s   %s\n", styleKey.Render("Address:"), status.Address)
 	routes := "none"
 	if len(status.Routes) > 0 {
 		routes = fmt.Sprintf("%v", status.Routes)
 	}
-	fmt.Fprintf(os.Stdout, "Routes:    %s\n", routes)
-	fmt.Fprintf(os.Stdout, "Server:    %s\n", status.ServerURL)
-	fmt.Fprintf(os.Stdout, "Uptime:    %s\n", formatDuration(time.Duration(status.UptimeSeconds*float64(time.Second))))
-	fmt.Fprintf(os.Stdout, "Peers:     %d\n", len(status.Peers))
+	fmt.Fprintf(os.Stdout, "%s    %s\n", styleKey.Render("Routes:"), routes)
+	fmt.Fprintf(os.Stdout, "%s    %s\n", styleKey.Render("Server:"), status.ServerURL)
+	fmt.Fprintf(os.Stdout, "%s    %s\n", styleKey.Render("Uptime:"), formatDuration(time.Duration(status.UptimeSeconds*float64(time.Second))))
+	fmt.Fprintf(os.Stdout, "%s     %d\n", styleKey.Render("Peers:"), len(status.Peers))
 	fmt.Println()
 
 	if len(status.Peers) == 0 {
