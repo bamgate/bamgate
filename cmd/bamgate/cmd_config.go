@@ -16,17 +16,20 @@ var configCmd = &cobra.Command{
 	Short: "Show config file paths",
 	Long: `Print the paths to the bamgate configuration files.
 
-  bamgate config          Print config file paths
-  bamgate config edit     Open config.toml in $EDITOR (requires sudo for secrets)
-  bamgate config path     Print only the config directory path`,
+  bamgate config                Print config file paths
+  bamgate config edit           Open config.toml in $EDITOR
+  bamgate config edit --secrets Open secrets.toml in $EDITOR
+  bamgate config path           Print the config directory path`,
 	RunE: runConfig,
 }
 
+var editSecrets bool
+
 var configEditCmd = &cobra.Command{
 	Use:   "edit",
-	Short: "Open config files in $EDITOR",
-	Long: `Open the bamgate config.toml and secrets.toml in your editor.
-Requires sudo to edit secrets.toml.`,
+	Short: "Open config.toml in $EDITOR",
+	Long: `Open the bamgate config.toml in your editor. Use --secrets to
+open secrets.toml instead (contains private key, tokens, etc.).`,
 	RunE: runConfigEdit,
 }
 
@@ -37,6 +40,7 @@ var configPathCmd = &cobra.Command{
 }
 
 func init() {
+	configEditCmd.Flags().BoolVar(&editSecrets, "secrets", false, "edit secrets.toml instead of config.toml")
 	configCmd.AddCommand(configEditCmd)
 	configCmd.AddCommand(configPathCmd)
 }
@@ -78,11 +82,12 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no editor found — set $EDITOR")
 	}
 
-	cfgPath := resolvedConfigPath()
-	secretsPath := config.SecretsPathFromConfig(cfgPath)
+	target := resolvedConfigPath()
+	if editSecrets {
+		target = config.SecretsPathFromConfig(target)
+	}
 
-	// Open both files in the editor.
-	c := exec.Command(editor, cfgPath, secretsPath)
+	c := exec.Command(editor, target)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
