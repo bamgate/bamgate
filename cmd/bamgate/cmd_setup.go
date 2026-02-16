@@ -61,6 +61,11 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: config split migration failed: %v\n", err)
 	}
 
+	// Fix directory and file permissions for the split config model.
+	if err := config.FixPermissions(cfgPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: fixing config permissions failed: %v\n", err)
+	}
+
 	// Check for existing config.
 	existingCfg, _ := config.LoadConfig(cfgPath)
 	if existingCfg != nil && !setupForce {

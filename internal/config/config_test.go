@@ -84,8 +84,8 @@ func TestSaveAndLoadConfig_roundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config file not created: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0644 {
-		t.Errorf("config.toml permissions = %o, want 0644", perm)
+	if perm := info.Mode().Perm(); perm != 0664 {
+		t.Errorf("config.toml permissions = %o, want 0664", perm)
 	}
 
 	// Verify secrets.toml exists with restricted permissions.
@@ -93,8 +93,8 @@ func TestSaveAndLoadConfig_roundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secrets file not created: %v", err)
 	}
-	if perm := sInfo.Mode().Perm(); perm != 0640 {
-		t.Errorf("secrets.toml permissions = %o, want 0640", perm)
+	if perm := sInfo.Mode().Perm(); perm != 0660 {
+		t.Errorf("secrets.toml permissions = %o, want 0660", perm)
 	}
 
 	// Verify config.toml does NOT contain secrets.
@@ -550,13 +550,13 @@ func TestMigrateConfigSplit_monolithicToSplit(t *testing.T) {
 		t.Error("config.toml still contains api_token after migration")
 	}
 
-	// Verify config.toml permissions are now 0644.
+	// Verify config.toml permissions are now 0664.
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat config.toml: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0644 {
-		t.Errorf("config.toml permissions after migration = %o, want 0644", perm)
+	if perm := info.Mode().Perm(); perm != 0664 {
+		t.Errorf("config.toml permissions after migration = %o, want 0664", perm)
 	}
 
 	// Verify full round-trip load works.

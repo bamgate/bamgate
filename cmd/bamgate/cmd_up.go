@@ -48,9 +48,13 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return runUpDaemon()
 	}
 
-	// Migrate from monolithic config.toml to split config.toml + secrets.toml.
+	// Migrate from monolithic config.toml to split config.toml + secrets.toml,
+	// then fix directory/file permissions for non-root CLI access.
 	if err := config.MigrateConfigSplit(resolvedConfigPath()); err != nil {
 		globalLogger.Warn("config split migration failed", "error", err)
+	}
+	if err := config.FixPermissions(resolvedConfigPath()); err != nil {
+		globalLogger.Warn("fixing config permissions failed", "error", err)
 	}
 
 	cfg, err := loadConfig()

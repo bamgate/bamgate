@@ -113,7 +113,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| v1.8.1 | 2026-02-15 | Fix config directory permissions (0700 -> 0755), `bamgate config` command |
+| v1.8.1 | 2026-02-15 | Fix config permissions for non-root access, `bamgate config` command |
 | v1.8.0 | 2026-02-15 | GitHub OAuth auth, config split for non-root CLI, `bamgate qr` + `bamgate devices` |
 | v1.7.1 | 2026-02-14 | New logo, Android icon update |
 | v1.7.0 | 2026-02-14 | Show local pushed routes in `bamgate status`, Android APK CI |

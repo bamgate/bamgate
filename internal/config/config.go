@@ -313,12 +313,14 @@ func LoadPublicConfig(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// SaveConfig writes both config.toml (0644, non-secret fields) and
-// secrets.toml (0640, secret fields) to the directory containing path.
-// Parent directories are created with mode 0755 if they don't exist.
+// SaveConfig writes both config.toml and secrets.toml to the directory
+// containing path. Parent directories are created with mode 0755 if they
+// don't exist.
 //
-// When running via sudo, secrets.toml is chowned to root:<invoking-user-gid>
-// so the invoking user can read secrets without sudo.
+// When running via sudo, both files are chowned to root:<invoking-user-gid>
+// so the invoking user can read and write them without sudo:
+//   - config.toml:  0664 (world-readable, group-writable — no secrets)
+//   - secrets.toml: 0660 (group-readable + group-writable — contains secrets)
 func SaveConfig(path string, cfg *Config) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -329,17 +331,18 @@ func SaveConfig(path string, cfg *Config) error {
 		return fmt.Errorf("setting directory permissions on %s: %w", dir, err)
 	}
 
-	// Write config.toml (world-readable — no secrets).
-	if err := writeFile(path, 0644, toConfigFile(cfg)); err != nil {
+	// Write config.toml (world-readable, group-writable — no secrets).
+	if err := writeFile(path, 0664, toConfigFile(cfg)); err != nil {
 		return fmt.Errorf("writing config file: %w", err)
 	}
+	applyUserOwnership(path)
 
-	// Write secrets.toml (root + group-readable — contains secrets).
+	// Write secrets.toml (group-readable + group-writable — contains secrets).
 	secretsPath := SecretsPathFromConfig(path)
-	if err := writeFile(secretsPath, 0640, toSecretsFile(cfg)); err != nil {
+	if err := writeFile(secretsPath, 0660, toSecretsFile(cfg)); err != nil {
 		return fmt.Errorf("writing secrets file: %w", err)
 	}
-	applySecretsOwnership(secretsPath)
+	applyUserOwnership(secretsPath)
 
 	return nil
 }
@@ -349,22 +352,21 @@ func SaveConfig(path string, cfg *Config) error {
 // and re-writing config.toml is unnecessary.
 func SaveSecrets(configPath string, cfg *Config) error {
 	secretsPath := SecretsPathFromConfig(configPath)
-	if err := writeFile(secretsPath, 0640, toSecretsFile(cfg)); err != nil {
+	if err := writeFile(secretsPath, 0660, toSecretsFile(cfg)); err != nil {
 		return fmt.Errorf("writing secrets file: %w", err)
 	}
-	applySecretsOwnership(secretsPath)
+	applyUserOwnership(secretsPath)
 	return nil
 }
 
-// applySecretsOwnership sets group ownership on secrets.toml so the user who
-// ran sudo can read it without elevation. When running as root via sudo, the
-// SUDO_GID environment variable identifies the invoking user's primary group.
-// The file is chowned to root:<sudo-gid>, and with mode 0640 the invoking user
-// (as a group member) gains read access.
+// applyUserOwnership sets group ownership on a config file so the user who
+// ran sudo can read and write it without elevation. When running as root via
+// sudo, the SUDO_GID environment variable identifies the invoking user's
+// primary group. The file is chowned to root:<sudo-gid>.
 //
 // This is a best-effort operation — errors are silently ignored because the
-// file is already written successfully and root can always read it.
-func applySecretsOwnership(path string) {
+// file is already written successfully and root can always access it.
+func applyUserOwnership(path string) {
 	// Only relevant when running as root.
 	if os.Getuid() != 0 {
 		return
@@ -380,8 +382,8 @@ func applySecretsOwnership(path string) {
 		return
 	}
 
-	// chown root:<sudo-user-gid> secrets.toml
-	// -1 means "don't change" for uid, so we keep root as owner.
+	// chown root:<sudo-user-gid>
+	// 0 keeps root as owner; gid grants group access to the invoking user.
 	_ = os.Chown(path, 0, gid)
 }
 
@@ -437,6 +439,38 @@ func MarshalTOML(cfg *Config) (string, error) {
 		return "", fmt.Errorf("encoding TOML config: %w", err)
 	}
 	return strings.TrimSpace(buf.String()), nil
+}
+
+// FixPermissions ensures the config directory and files have the correct
+// permissions for the split config model. This should be called from commands
+// that run as root (setup, up) to fix permissions from older versions.
+//
+// Directory: 0755 (world-traversable so non-root users can read config.toml).
+// config.toml: 0664 (world-readable, group-writable).
+// secrets.toml: 0660 (group-readable + group-writable).
+// Both files chowned to root:<SUDO_GID> when running via sudo.
+func FixPermissions(configPath string) error {
+	dir := filepath.Dir(configPath)
+
+	// Fix directory permissions (old versions used 0700).
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		if err := os.Chmod(dir, 0755); err != nil {
+			return fmt.Errorf("setting directory permissions on %s: %w", dir, err)
+		}
+	}
+
+	// Fix file permissions and ownership.
+	if _, err := os.Stat(configPath); err == nil {
+		_ = os.Chmod(configPath, 0664)
+		applyUserOwnership(configPath)
+	}
+	secretsPath := SecretsPathFromConfig(configPath)
+	if _, err := os.Stat(secretsPath); err == nil {
+		_ = os.Chmod(secretsPath, 0660)
+		applyUserOwnership(secretsPath)
+	}
+
+	return nil
 }
 
 // MigrateConfigSplit checks whether the config directory still uses the old
