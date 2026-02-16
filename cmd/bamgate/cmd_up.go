@@ -64,7 +64,7 @@ func runUp(cmd *cobra.Command, args []string) error {
 
 	// CLI flag overrides config file.
 	if upAcceptRoutes {
-		cfg.Device.AcceptRoutes = true
+		cfg.Device.AcceptRoutes = true //nolint:staticcheck // legacy flag, deprecated in favor of per-peer selections
 	}
 
 	if err := validateConfig(cfg); err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"unsafe"
 
@@ -486,4 +487,90 @@ func buildSetForwardingMsg(ifIndex int32, enabled bool) []byte {
 // rtaAlignLen rounds a length up to the nearest 4-byte boundary (RTA_ALIGN).
 func rtaAlignLen(l int) int {
 	return (l + 3) &^ 3
+}
+
+// SetDNS configures per-interface DNS servers and search domains using
+// systemd-resolved via the resolvectl command. This sets DNS only for the
+// specified interface, leaving system-wide DNS unaffected.
+// Falls back to writing /etc/resolv.conf if systemd-resolved is not available.
+func SetDNS(ifName string, servers []string, searchDomains []string) error {
+	if len(servers) == 0 && len(searchDomains) == 0 {
+		return nil
+	}
+
+	// Try systemd-resolved first (resolvectl).
+	if _, err := exec.LookPath("resolvectl"); err == nil {
+		return setDNSResolvectl(ifName, servers, searchDomains)
+	}
+
+	// Fallback: write to /etc/resolv.conf (less ideal but works everywhere).
+	return setDNSResolvConf(servers, searchDomains)
+}
+
+// RevertDNS removes per-interface DNS configuration set by SetDNS.
+func RevertDNS(ifName string) error {
+	// With systemd-resolved, DNS config is automatically removed when the
+	// interface goes down. We call revert explicitly for clean teardown.
+	if _, err := exec.LookPath("resolvectl"); err == nil {
+		cmd := exec.Command("resolvectl", "revert", ifName)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("resolvectl revert %s: %w (output: %s)",
+				ifName, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+
+	// No cleanup needed for /etc/resolv.conf fallback — the file is not
+	// interface-scoped, so we can't safely remove entries. The system will
+	// return to its normal DNS config on reboot or DHCP renewal.
+	return nil
+}
+
+// setDNSResolvectl uses resolvectl to set per-interface DNS.
+func setDNSResolvectl(ifName string, servers []string, searchDomains []string) error {
+	if len(servers) > 0 {
+		args := append([]string{"dns", ifName}, servers...)
+		cmd := exec.Command("resolvectl", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("resolvectl dns %s: %w (output: %s)",
+				ifName, err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	if len(searchDomains) > 0 {
+		args := append([]string{"domain", ifName}, searchDomains...)
+		cmd := exec.Command("resolvectl", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("resolvectl domain %s: %w (output: %s)",
+				ifName, err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	return nil
+}
+
+// setDNSResolvConf is a basic fallback that prepends nameserver entries to
+// /etc/resolv.conf. This is a best-effort approach for systems without
+// systemd-resolved.
+func setDNSResolvConf(servers []string, searchDomains []string) error {
+	existing, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading /etc/resolv.conf: %w", err)
+	}
+
+	var lines []string
+	lines = append(lines, "# Added by bamgate")
+	for _, s := range servers {
+		lines = append(lines, "nameserver "+s)
+	}
+	if len(searchDomains) > 0 {
+		lines = append(lines, "search "+strings.Join(searchDomains, " "))
+	}
+
+	newContent := strings.Join(lines, "\n") + "\n" + string(existing)
+	if err := os.WriteFile("/etc/resolv.conf", []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("writing /etc/resolv.conf: %w", err)
+	}
+
+	return nil
 }

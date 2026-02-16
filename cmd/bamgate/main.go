@@ -48,6 +48,7 @@ func init() {
 	rootCmd.AddCommand(upCmd)
 	rootCmd.AddCommand(downCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(peersCmd)
 	rootCmd.AddCommand(devicesCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(qrCmd)

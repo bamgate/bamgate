@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-15 (session 19)
+Last updated: 2026-02-16 (session 20)
 
 ## Current Phase
 
@@ -32,7 +32,12 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 | Standalone hub | `cmd/bamgate-hub/` | Lightweight signaling server for LAN testing |
 | Control server | `internal/control/` | Unix socket JSON status API, smart path resolution |
 | Subnet routing | config + protocol + agent | `[device] routes`, propagated via signaling, AllowedIPs per peer |
-| `--accept-routes` | config + agent + CLI | Opt-in for remote subnet routes (prevents LAN overlap conflicts) |
+| `--accept-routes` (legacy) | config + agent + CLI | Blanket opt-in for remote subnet routes (deprecated by per-peer selections) |
+| Peer capability advertisement | `pkg/protocol/`, signaling, worker | Metadata map on JoinMessage/PeerInfo carries routes, DNS, search domains |
+| Per-peer selections | `internal/config/`, `internal/agent/` | `[peers.<name>]` config sections, fine-grained opt-in per capability per peer |
+| Peer DNS advertisement | config + agent + tunnel | `dns`/`dns_search` in device config, advertised via metadata, applied via resolvectl/resolver |
+| `bamgate peers` | `cmd/bamgate/cmd_peers.go` | Show peer offerings + accepted selections, `configure` subcommand with TUI |
+| Control plane extensions | `internal/control/` | `GET /peers/offerings`, `POST /peers/configure` endpoints |
 | IP forwarding + NAT | `internal/tunnel/` | Netlink forwarding + nftables MASQUERADE, auto-detected interface |
 | Cloudflare Worker | `worker/` | Go/Wasm DO: signaling hub, WebSocket Hibernation, bearer auth, rehydration |
 | GitHub OAuth + JWT auth | `worker/src/worker.mjs`, `internal/auth/` | GitHub Device Auth flow, JWT access tokens, refresh token rotation, device registration |
@@ -74,11 +79,11 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Package | Files | Status |
 |---------|-------|--------|
-| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_setup.go, cmd_devices.go, cmd_qr.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go | **Implemented + tested** — Cobra subcommands: setup (GitHub OAuth), up, down, devices (list/revoke), qr, status, genkey, update, uninstall |
+| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_setup.go, cmd_devices.go, cmd_peers.go, cmd_qr.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go | **Implemented + tested** — Cobra subcommands: setup (GitHub OAuth), up, down, devices (list/revoke), peers (show/configure), qr, status, genkey, update, uninstall |
 | `cmd/bamgate-hub` | main.go | **Implemented** — standalone signaling server |
 | `internal/agent` | agent.go, agent_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection, JWT refresh loop |
 | `internal/auth` | github.go, tokens.go | **Implemented** — GitHub Device Auth flow (RFC 8628), register/refresh/list/revoke API client |
-| `internal/control` | server.go, server_test.go | **Implemented + tested** — Unix socket status API |
+| `internal/control` | server.go, server_test.go | **Implemented + tested** — Unix socket API: status, peer offerings, peer configure |
 | `internal/bridge` | bridge.go, bridge_test.go | **Implemented + tested** |
 | `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** — Split config.toml (0644) + secrets.toml (0640) for non-root CLI access |
 | `internal/signaling` | client.go, hub.go, client_test.go | **Implemented + tested** |
@@ -106,6 +111,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 | `golang.org/x/sys` | v0.41.0 | Netlink syscalls for TUN config, IP forwarding |
 | `github.com/pion/transport/v4` | v4.0.1 | Transport abstractions (Android socket protection) |
 | `github.com/skip2/go-qrcode` | v0.0.0 | Terminal QR code rendering for `bamgate qr` |
+| `github.com/charmbracelet/huh` | v0.8.0 | TUI forms for `bamgate peers configure` |
 | `golang.org/x/mobile` | latest | gomobile toolchain for Android AAR |
 | `golang.zx2c4.com/wireguard` | v0.0.0-20250521 | Userspace WireGuard device + TUN interface |
 
@@ -113,6 +119,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.9.0 | 2026-02-16 | Peer capability advertisement (DNS, routes, search domains), per-peer opt-in selections, `bamgate peers` TUI |
 | v1.8.3 | 2026-02-15 | Fix secrets file corruption, reclaim devices by name, reclaim revoked IPs |
 | v1.8.2 | 2026-02-15 | Android Custom Tab for OAuth flow |
 | v1.8.1 | 2026-02-15 | Fix config permissions for non-root access, `bamgate config` command |
@@ -144,6 +151,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 20 | 2026-02-16 | Peer capability advertisement: metadata map on signaling protocol, DNS/search domain config fields, per-peer `[peers.<name>]` selections in config, `bamgate peers` + `bamgate peers configure` TUI (charmbracelet/huh), control plane `/peers/offerings` + `/peers/configure` endpoints, DNS installation via resolvectl (Linux) / /etc/resolver (macOS), Android VPN DNS from peer selections, worker JS shim + Go hub metadata forwarding |
 | 19 | 2026-02-15 | Fix secrets.toml corruption (encode to buffer before writing), reclaim existing device by name on re-registration instead of creating ghost entries, reclaim revoked device IP addresses |
 | 18 | 2026-02-15 | Android Custom Tab for GitHub OAuth login (opens browser in-app instead of external browser) |
 | 17 | 2026-02-15 | Split config into config.toml (0644) + secrets.toml (0640) so CLI commands work without sudo, `bamgate qr` uses LoadPublicConfig, sudo user gets group read on secrets via SUDO_GID chown, auto-migration of old monolithic config |

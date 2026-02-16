@@ -14,6 +14,7 @@ type peer struct {
 	publicKey string
 	address   string
 	routes    []string
+	metadata  map[string]string
 }
 
 // peers tracks all connected peers by their WebSocket ID.
@@ -24,10 +25,11 @@ var peerByID = make(map[string]int)
 
 // peerInfo is the JSON representation of a peer in the peers list.
 type peerInfo struct {
-	PeerID    string   `json:"peerId"`
-	PublicKey string   `json:"publicKey"`
-	Address   string   `json:"address,omitempty"`
-	Routes    []string `json:"routes,omitempty"`
+	PeerID    string            `json:"peerId"`
+	PublicKey string            `json:"publicKey"`
+	Address   string            `json:"address,omitempty"`
+	Routes    []string          `json:"routes,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 // send sends a JSON message to a specific WebSocket by ID.
@@ -48,13 +50,14 @@ func broadcast(senderWsId int, data []byte) {
 
 // jsOnRehydrate is called by JS to silently restore a peer after hibernation.
 // Unlike jsOnJoin, it does NOT send a peers list or broadcast a join notification.
-// Arguments: wsId (int), peerId (string), publicKey (string), address (string), routesJSON (string)
+// Arguments: wsId (int), peerId (string), publicKey (string), address (string), routesJSON (string), metadataJSON (string)
 func jsOnRehydrate(_ js.Value, args []js.Value) any {
 	wsId := args[0].Int()
 	peerID := args[1].String()
 	publicKey := args[2].String()
 	address := args[3].String()
 	routes := parseRoutesJSON(args[4].String())
+	metadata := parseMetadataJSON(args[5].String())
 
 	peers[wsId] = &peer{
 		wsId:      wsId,
@@ -62,6 +65,7 @@ func jsOnRehydrate(_ js.Value, args []js.Value) any {
 		publicKey: publicKey,
 		address:   address,
 		routes:    routes,
+		metadata:  metadata,
 	}
 	peerByID[peerID] = wsId
 
@@ -69,13 +73,14 @@ func jsOnRehydrate(_ js.Value, args []js.Value) any {
 }
 
 // jsOnJoin is called by JS when a new peer sends a join message.
-// Arguments: wsId (int), peerId (string), publicKey (string), address (string), routesJSON (string)
+// Arguments: wsId (int), peerId (string), publicKey (string), address (string), routesJSON (string), metadataJSON (string)
 func jsOnJoin(_ js.Value, args []js.Value) any {
 	wsId := args[0].Int()
 	peerID := args[1].String()
 	publicKey := args[2].String()
 	address := args[3].String()
 	routes := parseRoutesJSON(args[4].String())
+	metadata := parseMetadataJSON(args[5].String())
 
 	p := &peer{
 		wsId:      wsId,
@@ -83,6 +88,7 @@ func jsOnJoin(_ js.Value, args []js.Value) any {
 		publicKey: publicKey,
 		address:   address,
 		routes:    routes,
+		metadata:  metadata,
 	}
 
 	// Build the current peers list before adding the new peer.
@@ -93,6 +99,7 @@ func jsOnJoin(_ js.Value, args []js.Value) any {
 			PublicKey: existing.publicKey,
 			Address:   existing.address,
 			Routes:    existing.routes,
+			Metadata:  existing.metadata,
 		})
 	}
 
@@ -115,6 +122,7 @@ func jsOnJoin(_ js.Value, args []js.Value) any {
 			PublicKey: publicKey,
 			Address:   address,
 			Routes:    routes,
+			Metadata:  metadata,
 		}},
 	})
 	broadcast(wsId, newPeerMsg)
@@ -158,6 +166,19 @@ func parseRoutesJSON(s string) []string {
 		return nil
 	}
 	return routes
+}
+
+// parseMetadataJSON decodes a JSON object of key-value string pairs. Returns
+// nil if the input is empty or invalid.
+func parseMetadataJSON(s string) map[string]string {
+	if s == "" || s == "{}" {
+		return nil
+	}
+	var meta map[string]string
+	if err := json.Unmarshal([]byte(s), &meta); err != nil {
+		return nil
+	}
+	return meta
 }
 
 // jsOnLeave is called by JS when a peer disconnects.

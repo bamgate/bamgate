@@ -4,15 +4,18 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -52,25 +55,72 @@ type Status struct {
 
 // PeerStatus represents the status of a single connected peer.
 type PeerStatus struct {
-	ID             string    `json:"id"`
-	Address        string    `json:"address"`
-	State          string    `json:"state"`
-	ICEType        string    `json:"ice_type"`
-	Routes         []string  `json:"routes,omitempty"`
-	ConnectedSince time.Time `json:"connected_since,omitempty"`
+	ID             string            `json:"id"`
+	Address        string            `json:"address"`
+	State          string            `json:"state"`
+	ICEType        string            `json:"ice_type"`
+	Routes         []string          `json:"routes,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	ConnectedSince time.Time         `json:"connected_since,omitempty"`
 }
 
 // StatusProvider is a function that returns the current agent status.
 type StatusProvider func() Status
 
+// PeerOfferings describes what a connected peer advertises and what the
+// local user has currently accepted. Used by the /peers/offerings endpoint
+// and the `bamgate peers` CLI command.
+type PeerOfferings struct {
+	// PeerID is the peer's name/identifier.
+	PeerID string `json:"peer_id"`
+
+	// Address is the peer's WireGuard tunnel address.
+	Address string `json:"address,omitempty"`
+
+	// State is the current ICE connection state.
+	State string `json:"state"`
+
+	// Advertised is what the peer offers.
+	Advertised PeerCapabilities `json:"advertised"`
+
+	// Accepted is what the local user has chosen to accept (from config).
+	Accepted PeerCapabilities `json:"accepted"`
+}
+
+// PeerCapabilities holds the routes, DNS servers, and search domains
+// that a peer either advertises or that a user has accepted.
+type PeerCapabilities struct {
+	Routes    []string `json:"routes,omitempty"`
+	DNS       []string `json:"dns,omitempty"`
+	DNSSearch []string `json:"dns_search,omitempty"`
+}
+
+// OfferingsProvider is a function that returns peer offerings with current
+// selection state.
+type OfferingsProvider func() []PeerOfferings
+
+// ConfigureRequest is the JSON body for POST /peers/configure.
+type ConfigureRequest struct {
+	// PeerID is the peer to configure.
+	PeerID string `json:"peer_id"`
+
+	// Selections is what the user wants to accept from this peer.
+	Selections PeerCapabilities `json:"selections"`
+}
+
+// ConfigureFunc applies per-peer selections and persists them to config.
+type ConfigureFunc func(req ConfigureRequest) error
+
 // Server is an HTTP server that listens on a Unix domain socket and
 // serves the agent's status as JSON.
 type Server struct {
-	socketPath string
-	provider   StatusProvider
-	log        *slog.Logger
-	listener   net.Listener
-	httpServer *http.Server
+	socketPath  string
+	provider    StatusProvider
+	offerings   OfferingsProvider
+	configureFn ConfigureFunc
+	log         *slog.Logger
+	listener    net.Listener
+	httpServer  *http.Server
 }
 
 // NewServer creates a new control server.
@@ -83,6 +133,16 @@ func NewServer(socketPath string, provider StatusProvider, logger *slog.Logger) 
 		provider:   provider,
 		log:        logger.With("component", "control"),
 	}
+}
+
+// SetOfferingsProvider sets the function used to serve GET /peers/offerings.
+func (s *Server) SetOfferingsProvider(fn OfferingsProvider) {
+	s.offerings = fn
+}
+
+// SetConfigureFunc sets the function used to handle POST /peers/configure.
+func (s *Server) SetConfigureFunc(fn ConfigureFunc) {
+	s.configureFn = fn
 }
 
 // Start begins listening on the Unix socket and serving HTTP requests.
@@ -112,6 +172,8 @@ func (s *Server) Start() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", s.handleStatus)
+	mux.HandleFunc("GET /peers/offerings", s.handlePeerOfferings)
+	mux.HandleFunc("POST /peers/configure", s.handlePeerConfigure)
 
 	s.httpServer = &http.Server{Handler: mux}
 
@@ -154,6 +216,48 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handlePeerOfferings responds with peer capability offerings and selections.
+func (s *Server) handlePeerOfferings(w http.ResponseWriter, r *http.Request) {
+	if s.offerings == nil {
+		http.Error(w, "offerings not available", http.StatusNotImplemented)
+		return
+	}
+
+	offerings := s.offerings()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(offerings); err != nil {
+		s.log.Error("encoding offerings response", "error", err)
+	}
+}
+
+// handlePeerConfigure applies per-peer selections.
+func (s *Server) handlePeerConfigure(w http.ResponseWriter, r *http.Request) {
+	if s.configureFn == nil {
+		http.Error(w, "configure not available", http.StatusNotImplemented)
+		return
+	}
+
+	var req ConfigureRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %s", err), http.StatusBadRequest)
+		return
+	}
+
+	if req.PeerID == "" {
+		http.Error(w, "peer_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.configureFn(req); err != nil {
+		http.Error(w, fmt.Sprintf("applying configuration: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
 // FetchStatus connects to a running control server and returns the status.
 // This is used by the "bamgate status" CLI command.
 func FetchStatus(socketPath string) (*Status, error) {
@@ -182,4 +286,66 @@ func FetchStatus(socketPath string) (*Status, error) {
 	}
 
 	return &status, nil
+}
+
+// FetchOfferings connects to a running control server and returns peer
+// offerings. This is used by the "bamgate peers" CLI command.
+func FetchOfferings(socketPath string) ([]PeerOfferings, error) {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get("http://bamgate/peers/offerings")
+	if err != nil {
+		return nil, fmt.Errorf("connecting to control socket: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var offerings []PeerOfferings
+	if err := json.NewDecoder(resp.Body).Decode(&offerings); err != nil {
+		return nil, fmt.Errorf("decoding offerings response: %w", err)
+	}
+
+	return offerings, nil
+}
+
+// SendConfigure sends a peer configuration request to the running agent.
+// This is used by the "bamgate peers configure" CLI command.
+func SendConfigure(socketPath string, req ConfigureRequest) error {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("encoding request: %w", err)
+	}
+
+	resp, err := client.Post("http://bamgate/peers/configure", "application/json",
+		bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("connecting to control socket: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("configure failed (status %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	return nil
 }

@@ -30,6 +30,9 @@ type Hub struct {
 type hubPeer struct {
 	id        string
 	publicKey string
+	address   string
+	routes    []string
+	metadata  map[string]string
 	conn      *websocket.Conn
 }
 
@@ -93,6 +96,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	peer := &hubPeer{
 		id:        join.PeerID,
 		publicKey: join.PublicKey,
+		address:   join.Address,
+		routes:    join.Routes,
+		metadata:  join.Metadata,
 		conn:      c,
 	}
 
@@ -102,7 +108,13 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	var peerInfos []protocol.PeerInfo
 	for _, p := range h.peers {
-		peerInfos = append(peerInfos, protocol.PeerInfo{PeerID: p.id, PublicKey: p.publicKey})
+		peerInfos = append(peerInfos, protocol.PeerInfo{
+			PeerID:    p.id,
+			PublicKey: p.publicKey,
+			Address:   p.address,
+			Routes:    p.routes,
+			Metadata:  p.metadata,
+		})
 	}
 	h.peers[peer.id] = peer
 	h.mu.Unlock()
@@ -115,7 +127,13 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Notify existing peers about the new arrival. We send a PeersMessage
 	// containing only the new peer so existing agents learn its ID and
 	// public key and can initiate a WebRTC connection.
-	newPeerMsg := &protocol.PeersMessage{Peers: []protocol.PeerInfo{{PeerID: peer.id, PublicKey: peer.publicKey}}}
+	newPeerMsg := &protocol.PeersMessage{Peers: []protocol.PeerInfo{{
+		PeerID:    peer.id,
+		PublicKey: peer.publicKey,
+		Address:   peer.address,
+		Routes:    peer.routes,
+		Metadata:  peer.metadata,
+	}}}
 	if npData, mErr := protocol.Marshal(newPeerMsg); mErr == nil {
 		h.mu.Lock()
 		for _, p := range h.peers {

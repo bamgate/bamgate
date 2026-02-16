@@ -33,6 +33,11 @@ type ClientConfig struct {
 	// this device, advertised to peers via the join message.
 	Routes []string
 
+	// Metadata is an optional map of capability advertisements (routes, DNS,
+	// search domains) included in the join message so other peers can
+	// discover what this device offers.
+	Metadata map[string]string
+
 	// TokenProvider returns the current bearer token for authenticating with
 	// the signaling server. Called on each dial attempt so it can return a
 	// fresh JWT after token refresh. If nil, no Authorization header is sent.
@@ -223,6 +228,7 @@ func (c *Client) sendJoin(ctx context.Context) error {
 		PublicKey: c.cfg.PublicKey,
 		Address:   c.cfg.Address,
 		Routes:    c.cfg.Routes,
+		Metadata:  c.cfg.Metadata,
 	})
 }
 

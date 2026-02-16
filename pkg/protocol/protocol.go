@@ -20,18 +20,35 @@ type Message interface {
 
 // PeerInfo describes a connected peer, used in the PeersMessage.
 type PeerInfo struct {
-	PeerID    string   `json:"peerId"`
-	PublicKey string   `json:"publicKey"`
-	Address   string   `json:"address,omitempty"`
-	Routes    []string `json:"routes,omitempty"`
+	PeerID    string            `json:"peerId"`
+	PublicKey string            `json:"publicKey"`
+	Address   string            `json:"address,omitempty"`
+	Routes    []string          `json:"routes,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
+
+// Well-known metadata keys for peer capability advertisement.
+const (
+	// MetaKeyRoutes advertises subnet routes reachable through this peer.
+	// Value is a JSON array of CIDR strings, e.g. `["10.96.0.0/12"]`.
+	MetaKeyRoutes = "routes"
+
+	// MetaKeyDNS advertises DNS servers available through this peer.
+	// Value is a JSON array of IP strings, e.g. `["10.96.0.10"]`.
+	MetaKeyDNS = "dns"
+
+	// MetaKeyDNSSearch advertises DNS search domains available through this peer.
+	// Value is a JSON array of domain strings, e.g. `["svc.cluster.local"]`.
+	MetaKeyDNSSearch = "dns_search"
+)
 
 // JoinMessage is sent by a client to announce itself to the signaling hub.
 type JoinMessage struct {
-	PeerID    string   `json:"peerId"`
-	PublicKey string   `json:"publicKey"`
-	Address   string   `json:"address,omitempty"`
-	Routes    []string `json:"routes,omitempty"`
+	PeerID    string            `json:"peerId"`
+	PublicKey string            `json:"publicKey"`
+	Address   string            `json:"address,omitempty"`
+	Routes    []string          `json:"routes,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 func (JoinMessage) MessageType() string { return "join" }

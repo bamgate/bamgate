@@ -215,8 +215,31 @@ class BamgateVpnService : VpnService() {
             .setMtu(1420)
             .addAddress(addrIp, addrPrefix)
             .addRoute(subnetIp, subnetPrefix) // Tunnel subnet (e.g. 10.0.0.0/24)
-            .addDnsServer("8.8.8.8")
-            .addDnsServer("8.8.4.4")
+
+        // Add DNS servers from per-peer selections (falls back to device
+        // config or Google DNS if none configured).
+        try {
+            val dnsArr = JSONArray(tunnel?.dnsServers ?: "[\"8.8.8.8\",\"8.8.4.4\"]")
+            for (i in 0 until dnsArr.length()) {
+                builder.addDnsServer(dnsArr.getString(i))
+                Log.i(TAG, "VPN DNS server added: ${dnsArr.getString(i)}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse DNS servers, using defaults", e)
+            builder.addDnsServer("8.8.8.8")
+            builder.addDnsServer("8.8.4.4")
+        }
+
+        // Add DNS search domains from per-peer selections.
+        try {
+            val searchArr = JSONArray(tunnel?.dnsSearchDomains ?: "[]")
+            for (i in 0 until searchArr.length()) {
+                builder.addSearchDomain(searchArr.getString(i))
+                Log.i(TAG, "VPN search domain added: ${searchArr.getString(i)}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse DNS search domains", e)
+        }
 
         // Add peer-advertised routes (e.g. 192.168.1.0/24 for home LAN).
         for (route in extraRoutes) {

@@ -680,7 +680,7 @@ export class SignalingRoom {
       // Only rehydrate signaling peers (not TURN connections — TURN state
       // is transient and does not survive hibernation).
       if (attachment.joined) {
-        globalThis.goOnRehydrate(attachment.wsId, attachment.peerId, attachment.publicKey || "", attachment.address || "", JSON.stringify(attachment.routes || []));
+        globalThis.goOnRehydrate(attachment.wsId, attachment.peerId, attachment.publicKey || "", attachment.address || "", JSON.stringify(attachment.routes || []), JSON.stringify(attachment.metadata || {}));
       }
     }
     this.nextWsId = maxWsId;
@@ -817,6 +817,7 @@ export class SignalingRoom {
         publicKey: msg.publicKey || "",
         address: msg.address || "",
         routes: msg.routes || [],
+        metadata: msg.metadata || {},
       });
 
       // Update last_seen_at for this device.
@@ -829,7 +830,7 @@ export class SignalingRoom {
         );
       }
 
-      globalThis.goOnJoin(wsId, msg.peerId, msg.publicKey || "", msg.address || "", JSON.stringify(msg.routes || []));
+      globalThis.goOnJoin(wsId, msg.peerId, msg.publicKey || "", msg.address || "", JSON.stringify(msg.routes || []), JSON.stringify(msg.metadata || {}));
       return;
     }
 

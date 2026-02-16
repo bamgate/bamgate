@@ -11,6 +11,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -159,6 +160,11 @@ type peerState struct {
 	address   string     // WireGuard tunnel address (e.g. "10.0.0.3/24")
 	routes    []string   // additional subnets reachable through this peer
 
+	// metadata holds the peer's advertised capabilities (routes, DNS,
+	// search domains) received via signaling. Used by the control plane
+	// to show peer offerings and by the agent to apply user selections.
+	metadata map[string]string
+
 	connectedAt time.Time // when the data channel opened
 
 	// ICE restart tracking.
@@ -251,9 +257,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
-	// 5. Start control server for "bamgate status".
+	// 5. Start control server for "bamgate status" and "bamgate peers".
 	a.startedAt = time.Now()
 	a.ctrlSrv = control.NewServer(control.ResolveSocketPath(), a.Status, a.log)
+	a.ctrlSrv.SetOfferingsProvider(a.PeerOfferings)
+	a.ctrlSrv.SetConfigureFunc(a.ConfigurePeer)
 	if err := a.ctrlSrv.Start(); err != nil {
 		a.log.Warn("control server failed to start (status command will be unavailable)", "error", err)
 		// Non-fatal — agent can run without the control server.
@@ -276,6 +284,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		PublicKey:     pubKey.String(),
 		Address:       a.cfg.Device.Address,
 		Routes:        a.cfg.Device.Routes,
+		Metadata:      a.cfg.Device.BuildMetadata(),
 		TokenProvider: a.tokenProvider,
 		Logger:        a.log,
 		Reconnect: signaling.ReconnectConfig{
@@ -347,24 +356,25 @@ func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) err
 			continue
 		}
 
-		a.log.Info("discovered peer", "peer_id", p.PeerID, "public_key", p.PublicKey, "address", p.Address, "routes", p.Routes)
+		a.log.Info("discovered peer",
+			"peer_id", p.PeerID, "public_key", p.PublicKey,
+			"address", p.Address, "routes", p.Routes, "metadata", p.Metadata)
 
 		// Determine who offers: the peer with the smaller ID.
 		if a.cfg.Device.Name < p.PeerID {
-			if err := a.initiateConnection(ctx, p.PeerID, p.PublicKey, p.Address, p.Routes); err != nil {
+			if err := a.initiateConnection(ctx, p.PeerID, p.PublicKey, p.Address, p.Routes, p.Metadata); err != nil {
 				a.log.Error("initiating connection", "peer_id", p.PeerID, "error", err)
 			}
 		} else {
-			// We'll receive an offer from this peer. Pre-store their address
-			// and routes so they're available when the data channel opens.
+			// We'll receive an offer from this peer. Pre-store their address,
+			// routes, and metadata so they're available when the data channel opens.
 			a.mu.Lock()
 			if ps, ok := a.peers[p.PeerID]; ok {
 				ps.address = p.Address
 				ps.routes = p.Routes
+				ps.metadata = p.Metadata
 			} else {
-				// Peer state not yet created; store address/routes for later.
-				// createRTCPeer will be called when the offer arrives.
-				a.peers[p.PeerID] = &peerState{address: p.Address, routes: p.Routes}
+				a.peers[p.PeerID] = &peerState{address: p.Address, routes: p.Routes, metadata: p.Metadata}
 			}
 			a.mu.Unlock()
 		}
@@ -523,7 +533,7 @@ func (a *Agent) handlePeerLeft(msg *protocol.PeerLeftMessage) error {
 
 // initiateConnection creates a WebRTC peer and sends an SDP offer to the
 // remote peer via signaling.
-func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, address string, routes []string) error {
+func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, address string, routes []string, metadata map[string]string) error {
 	a.log.Info("initiating connection", "peer_id", peerID)
 
 	// Store the public key so we can configure WireGuard when the data
@@ -556,12 +566,13 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, addre
 		return fmt.Errorf("creating RTC peer: %w", err)
 	}
 
-	// Store the WireGuard public key, tunnel address, and routes.
+	// Store the WireGuard public key, tunnel address, routes, and metadata.
 	a.mu.Lock()
 	if ps, ok := a.peers[peerID]; ok {
 		ps.publicKey = wgPubKey
 		ps.address = address
 		ps.routes = routes
+		ps.metadata = metadata
 	}
 	a.mu.Unlock()
 
@@ -708,10 +719,12 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 		return
 	}
 
+	// Resolve which routes to accept from this peer based on per-peer
+	// selections (preferred) or the legacy AcceptRoutes flag.
+	acceptedRoutes := a.resolveAcceptedRoutes(peerID, ps)
+
 	// Determine the peer's WireGuard allowed IPs from their tunnel address
-	// and any additional routes they advertise.
-	// The address comes from the peers list (e.g. "10.0.0.3/24"). We extract
-	// the host IP and use a /32 so each peer only routes its own address.
+	// and the accepted routes.
 	allowedIPs := []string{"0.0.0.0/0", "::/0"} // fallback if no address
 	if ps.address != "" {
 		ip, _, err := net.ParseCIDR(ps.address)
@@ -719,22 +732,7 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 			a.log.Warn("invalid peer address, using default AllowedIPs",
 				"peer_id", peerID, "address", ps.address, "error", err)
 		} else {
-			allowedIPs = []string{ip.String() + "/32"}
-
-			// Append validated advertised routes from the peer if accept_routes is enabled.
-			if a.cfg.Device.AcceptRoutes {
-				for _, route := range ps.routes {
-					if !isValidRoute(route) {
-						a.log.Warn("ignoring invalid or dangerous route from peer",
-							"peer_id", peerID, "route", route)
-						continue
-					}
-					allowedIPs = append(allowedIPs, route)
-				}
-			} else if len(ps.routes) > 0 {
-				a.log.Info("ignoring advertised routes from peer (accept_routes not enabled)",
-					"peer_id", peerID, "routes", ps.routes)
-			}
+			allowedIPs = append([]string{ip.String() + "/32"}, acceptedRoutes...)
 
 			a.log.Info("using peer-specific AllowedIPs",
 				"peer_id", peerID, "allowed_ips", allowedIPs)
@@ -755,33 +753,33 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 		a.log.Error("adding WireGuard peer", "peer_id", peerID, "error", err)
 	}
 
-	// Add kernel routes for the peer's advertised subnets so the kernel
-	// directs matching traffic into the TUN interface. Without these routes,
-	// WireGuard has the AllowedIPs but the kernel doesn't know to send
-	// packets to bamgate0.
-	if a.cfg.Device.AcceptRoutes {
-		for _, route := range ps.routes {
-			if !isValidRoute(route) {
-				continue
-			}
-			if err := tunnel.AddRoute(a.tunName, route); err != nil {
-				a.log.Warn("adding route for peer", "peer_id", peerID, "route", route, "error", err)
-			} else {
-				a.log.Info("added route", "peer_id", peerID, "route", route, "dev", a.tunName)
-			}
+	// Add kernel routes for accepted subnets so the kernel directs matching
+	// traffic into the TUN interface.
+	for _, route := range acceptedRoutes {
+		if err := tunnel.AddRoute(a.tunName, route); err != nil {
+			a.log.Warn("adding route for peer", "peer_id", peerID, "route", route, "error", err)
+		} else {
+			a.log.Info("added route", "peer_id", peerID, "route", route, "dev", a.tunName)
+		}
+	}
+
+	// Configure DNS for accepted DNS servers/search domains from this peer.
+	acceptedDNS, acceptedSearch := a.resolveAcceptedDNS(peerID)
+	if len(acceptedDNS) > 0 || len(acceptedSearch) > 0 {
+		if err := tunnel.SetDNS(a.tunName, acceptedDNS, acceptedSearch); err != nil {
+			a.log.Warn("setting DNS for peer", "peer_id", peerID, "error", err)
+		} else {
+			a.log.Info("configured DNS",
+				"peer_id", peerID, "dns", acceptedDNS, "search", acceptedSearch, "dev", a.tunName)
 		}
 	}
 
 	// Notify the route update callback (Android VPN restart) if the peer
-	// advertises routes we haven't seen before. The callback must not
-	// block — the Android side handles the VPN restart asynchronously.
-	if a.opts.routeUpdateCallback != nil && a.cfg.Device.AcceptRoutes && len(ps.routes) > 0 {
+	// has accepted routes we haven't seen before.
+	if a.opts.routeUpdateCallback != nil && len(acceptedRoutes) > 0 {
 		var newRoutes []string
 		a.mu.Lock()
-		for _, route := range ps.routes {
-			if !isValidRoute(route) {
-				continue
-			}
+		for _, route := range acceptedRoutes {
 			if !a.notifiedRoutes[route] {
 				a.notifiedRoutes[route] = true
 				newRoutes = append(newRoutes, route)
@@ -795,6 +793,58 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 			a.opts.routeUpdateCallback(newRoutes)
 		}
 	}
+}
+
+// resolveAcceptedRoutes determines which routes to accept from a peer.
+// Per-peer selections take precedence; falls back to legacy AcceptRoutes.
+func (a *Agent) resolveAcceptedRoutes(peerID string, ps *peerState) []string {
+	// Check for per-peer selections first.
+	if sel, ok := a.cfg.PeerSelection(peerID); ok {
+		var accepted []string
+		for _, route := range sel.Routes {
+			if !isValidRoute(route) {
+				a.log.Warn("ignoring invalid route in peer selection",
+					"peer_id", peerID, "route", route)
+				continue
+			}
+			accepted = append(accepted, route)
+		}
+		if len(accepted) > 0 {
+			a.log.Info("applying per-peer route selections",
+				"peer_id", peerID, "routes", accepted)
+		}
+		return accepted
+	}
+
+	// Legacy fallback: accept all routes if AcceptRoutes is enabled.
+	if a.cfg.Device.AcceptRoutes { //nolint:staticcheck // intentional backward compat
+		var accepted []string
+		for _, route := range ps.routes {
+			if !isValidRoute(route) {
+				a.log.Warn("ignoring invalid or dangerous route from peer",
+					"peer_id", peerID, "route", route)
+				continue
+			}
+			accepted = append(accepted, route)
+		}
+		return accepted
+	}
+
+	if len(ps.routes) > 0 {
+		a.log.Info("peer advertises routes but none are accepted (configure with 'bamgate peers configure')",
+			"peer_id", peerID, "routes", ps.routes)
+	}
+	return nil
+}
+
+// resolveAcceptedDNS determines which DNS servers and search domains to accept
+// from a peer based on per-peer selections.
+func (a *Agent) resolveAcceptedDNS(peerID string) (dns []string, search []string) {
+	sel, ok := a.cfg.PeerSelection(peerID)
+	if !ok {
+		return nil, nil
+	}
+	return sel.DNS, sel.DNSSearch
 }
 
 // removePeer tears down the WebRTC connection and WireGuard peer state.
@@ -813,15 +863,23 @@ func (a *Agent) removePeer(peerID string) {
 	delete(a.peers, peerID)
 	a.mu.Unlock()
 
-	// Remove kernel routes for the peer's advertised subnets.
-	for _, route := range ps.routes {
-		if !isValidRoute(route) {
-			continue
-		}
+	// Remove kernel routes that were accepted from this peer.
+	acceptedRoutes := a.resolveAcceptedRoutes(peerID, ps)
+	for _, route := range acceptedRoutes {
 		if err := tunnel.RemoveRoute(a.tunName, route); err != nil {
 			a.log.Warn("removing route for peer", "peer_id", peerID, "route", route, "error", err)
 		} else {
 			a.log.Info("removed route", "peer_id", peerID, "route", route, "dev", a.tunName)
+		}
+	}
+
+	// Remove DNS configuration for this peer.
+	acceptedDNS, acceptedSearch := a.resolveAcceptedDNS(peerID)
+	if len(acceptedDNS) > 0 || len(acceptedSearch) > 0 {
+		if err := tunnel.RevertDNS(a.tunName); err != nil {
+			a.log.Warn("reverting DNS for peer", "peer_id", peerID, "error", err)
+		} else {
+			a.log.Info("reverted DNS", "peer_id", peerID, "dev", a.tunName)
 		}
 	}
 
@@ -851,9 +909,10 @@ func (a *Agent) Status() control.Status {
 	peers := make([]control.PeerStatus, 0, len(a.peers))
 	for id, ps := range a.peers {
 		peerStatus := control.PeerStatus{
-			ID:      id,
-			Address: ps.address,
-			Routes:  ps.routes,
+			ID:       id,
+			Address:  ps.address,
+			Routes:   ps.routes,
+			Metadata: ps.metadata,
 		}
 
 		if ps.rtcPeer != nil {
@@ -878,6 +937,105 @@ func (a *Agent) Status() control.Status {
 		UptimeSeconds: time.Since(a.startedAt).Seconds(),
 		Peers:         peers,
 	}
+}
+
+// PeerOfferings returns the capabilities advertised by each connected peer
+// along with the user's current selections from config.
+func (a *Agent) PeerOfferings() []control.PeerOfferings {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	offerings := make([]control.PeerOfferings, 0, len(a.peers))
+	for id, ps := range a.peers {
+		o := control.PeerOfferings{
+			PeerID:  id,
+			Address: ps.address,
+		}
+
+		if ps.rtcPeer != nil {
+			o.State = ps.rtcPeer.ConnectionState().String()
+		} else {
+			o.State = "initializing"
+		}
+
+		// Parse advertised capabilities from metadata.
+		o.Advertised = parseCapabilities(ps.metadata, ps.routes)
+
+		// Load current selections from config.
+		if sel, ok := a.cfg.PeerSelection(id); ok {
+			o.Accepted = control.PeerCapabilities{
+				Routes:    sel.Routes,
+				DNS:       sel.DNS,
+				DNSSearch: sel.DNSSearch,
+			}
+		}
+
+		offerings = append(offerings, o)
+	}
+
+	return offerings
+}
+
+// parseCapabilities extracts PeerCapabilities from a peer's metadata and
+// legacy routes field.
+func parseCapabilities(metadata map[string]string, legacyRoutes []string) control.PeerCapabilities {
+	caps := control.PeerCapabilities{}
+
+	// Parse routes from metadata, falling back to legacy routes field.
+	if routesJSON, ok := metadata["routes"]; ok {
+		var routes []string
+		if err := json.Unmarshal([]byte(routesJSON), &routes); err == nil {
+			caps.Routes = routes
+		}
+	}
+	if len(caps.Routes) == 0 && len(legacyRoutes) > 0 {
+		caps.Routes = legacyRoutes
+	}
+
+	// Parse DNS servers from metadata.
+	if dnsJSON, ok := metadata["dns"]; ok {
+		var dns []string
+		if err := json.Unmarshal([]byte(dnsJSON), &dns); err == nil {
+			caps.DNS = dns
+		}
+	}
+
+	// Parse search domains from metadata.
+	if searchJSON, ok := metadata["dns_search"]; ok {
+		var search []string
+		if err := json.Unmarshal([]byte(searchJSON), &search); err == nil {
+			caps.DNSSearch = search
+		}
+	}
+
+	return caps
+}
+
+// ConfigurePeer applies per-peer selections from a control request, persists
+// them to the config file, and updates the in-memory config.
+func (a *Agent) ConfigurePeer(req control.ConfigureRequest) error {
+	a.log.Info("configuring peer selections",
+		"peer_id", req.PeerID,
+		"routes", req.Selections.Routes,
+		"dns", req.Selections.DNS,
+		"dns_search", req.Selections.DNSSearch,
+	)
+
+	// Update the in-memory config.
+	a.cfg.SetPeerSelection(req.PeerID, config.PeerSelections{
+		Routes:    req.Selections.Routes,
+		DNS:       req.Selections.DNS,
+		DNSSearch: req.Selections.DNSSearch,
+	})
+
+	// Persist to disk.
+	if a.configPath != "" {
+		if err := config.SaveConfig(a.configPath, a.cfg); err != nil {
+			return fmt.Errorf("saving config: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // handleICEStateChange reacts to ICE connection state transitions for a peer.

@@ -240,13 +240,118 @@ func (t *Tunnel) GetTunnelSubnet() string {
 }
 
 // GetAcceptRoutes returns whether accept_routes is enabled in the config.
+//
+// Deprecated: Use per-peer selections via GetPeerOfferings/ConfigurePeer instead.
 func (t *Tunnel) GetAcceptRoutes() bool {
-	return t.cfg.Device.AcceptRoutes
+	return t.cfg.Device.AcceptRoutes //nolint:staticcheck // backward compat
 }
 
 // GetForceRelay returns whether force_relay is enabled in the config.
 func (t *Tunnel) GetForceRelay() bool {
 	return t.cfg.Device.ForceRelay
+}
+
+// GetPeerOfferings returns a JSON-encoded array of peer offerings, including
+// what each peer advertises and what the user has accepted. Returns "[]" if
+// the tunnel is not running.
+//
+// This is used by the Android UI to show a peer management screen where
+// the user can opt in to routes, DNS, and search domains from each peer.
+func (t *Tunnel) GetPeerOfferings() string {
+	if t.ag == nil {
+		return "[]"
+	}
+	offerings := t.ag.PeerOfferings()
+	data, err := json.Marshal(offerings)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+// ConfigurePeer applies per-peer selections for the given peer. The
+// selectionsJSON parameter is a JSON object with optional "routes", "dns",
+// and "dns_search" arrays. Example:
+//
+//	{"routes": ["10.96.0.0/12"], "dns": ["10.96.0.10"], "dns_search": ["svc.cluster.local"]}
+//
+// Selections are persisted to the in-memory config. The caller should persist
+// the config via UpdateConfig after making changes.
+func (t *Tunnel) ConfigurePeer(peerID string, selectionsJSON string) error {
+	if t.ag == nil {
+		return fmt.Errorf("tunnel is not running")
+	}
+
+	var caps struct {
+		Routes    []string `json:"routes"`
+		DNS       []string `json:"dns"`
+		DNSSearch []string `json:"dns_search"`
+	}
+	if err := json.Unmarshal([]byte(selectionsJSON), &caps); err != nil {
+		return fmt.Errorf("parsing selections: %w", err)
+	}
+
+	t.cfg.SetPeerSelection(peerID, config.PeerSelections{
+		Routes:    caps.Routes,
+		DNS:       caps.DNS,
+		DNSSearch: caps.DNSSearch,
+	})
+
+	return nil
+}
+
+// GetDNSServers returns the DNS servers that should be used for the VPN
+// interface, based on the user's per-peer selections. Returns a JSON array
+// of IP strings. If no per-peer DNS is configured, returns the device's
+// configured DNS servers. Falls back to Google DNS if nothing is configured.
+func (t *Tunnel) GetDNSServers() string {
+	var servers []string
+
+	// Collect DNS servers from all per-peer selections.
+	if t.cfg.Peers != nil {
+		for _, sel := range t.cfg.Peers {
+			servers = append(servers, sel.DNS...)
+		}
+	}
+
+	// Fallback to device-level DNS config.
+	if len(servers) == 0 {
+		servers = t.cfg.Device.DNS
+	}
+
+	// Fallback to Google DNS.
+	if len(servers) == 0 {
+		servers = []string{"8.8.8.8", "8.8.4.4"}
+	}
+
+	data, _ := json.Marshal(servers)
+	return string(data)
+}
+
+// GetDNSSearchDomains returns the DNS search domains for the VPN interface,
+// based on the user's per-peer selections. Returns a JSON array of domain
+// strings.
+func (t *Tunnel) GetDNSSearchDomains() string {
+	var domains []string
+
+	// Collect search domains from all per-peer selections.
+	if t.cfg.Peers != nil {
+		for _, sel := range t.cfg.Peers {
+			domains = append(domains, sel.DNSSearch...)
+		}
+	}
+
+	// Fallback to device-level config.
+	if len(domains) == 0 {
+		domains = t.cfg.Device.DNSSearch
+	}
+
+	if len(domains) == 0 {
+		return "[]"
+	}
+
+	data, _ := json.Marshal(domains)
+	return string(data)
 }
 
 // GetServerURL returns the signaling server URL from the config.
@@ -356,7 +461,7 @@ func RegisterDevice(serverHost, githubToken, deviceName string) (*RegisterResult
 	cfg.Device.Name = deviceName
 	cfg.Device.PrivateKey = privateKey
 	cfg.Device.Address = resp.Address
-	cfg.Device.AcceptRoutes = true // Android devices typically want to access home LAN subnets
+	cfg.Device.AcceptRoutes = true //nolint:staticcheck // legacy default for backward compat
 
 	// Serialize to TOML.
 	tomlStr, err := config.MarshalTOML(cfg)

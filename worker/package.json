@@ -3,8 +3,8 @@
   "private": true,
   "scripts": {
     "build": "npm run build:wasm && npm run build:assets && npm run build:worker",
-    "build:wasm": "tinygo build -o ./build/app.wasm -target wasm -no-debug .",
-    "build:assets": "cp $(tinygo env TINYGOROOT)/targets/wasm_exec.js ./build/wasm_exec.js",
+    "build:wasm": "~/.local/tinygo/bin/tinygo build -o ./build/app.wasm -target wasm -no-debug .",
+    "build:assets": "cp $(~/.local/tinygo/bin/tinygo env TINYGOROOT)/targets/wasm_exec.js ./build/wasm_exec.js",
     "build:worker": "cp ./src/worker.mjs ./build/worker.mjs",
     "dev": "npm run build && npx wrangler dev",
     "deploy": "npm run build && npx wrangler deploy"

@@ -25,3 +25,9 @@ func GetForwarding(ifName string) (bool, error) { return false, nil }
 
 // SetForwarding is a no-op on Android — IP forwarding is managed by the OS.
 func SetForwarding(ifName string, enabled bool) error { return nil }
+
+// SetDNS is a no-op on Android — DNS is configured via VpnService.Builder.addDnsServer().
+func SetDNS(ifName string, servers []string, searchDomains []string) error { return nil }
+
+// RevertDNS is a no-op on Android — DNS is removed when the VPN stops.
+func RevertDNS(ifName string) error { return nil }

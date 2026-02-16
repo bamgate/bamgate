@@ -5,6 +5,7 @@ package tunnel
 import (
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -122,5 +123,66 @@ func SetForwarding(_ string, enabled bool) error {
 		return fmt.Errorf("setting forwarding to %s: %w (output: %s)",
 			val, err, strings.TrimSpace(string(out)))
 	}
+	return nil
+}
+
+// SetDNS configures DNS servers and search domains for the bamgate interface
+// on macOS by creating a resolver configuration in /etc/resolver/.
+// Each search domain gets a resolver file that routes queries through the
+// specified DNS servers.
+func SetDNS(_ string, servers []string, searchDomains []string) error {
+	if len(servers) == 0 {
+		return nil
+	}
+
+	// macOS uses /etc/resolver/<domain> files for split DNS.
+	if err := os.MkdirAll("/etc/resolver", 0755); err != nil {
+		return fmt.Errorf("creating /etc/resolver: %w", err)
+	}
+
+	var nameserverLines string
+	for _, s := range servers {
+		nameserverLines += "nameserver " + s + "\n"
+	}
+
+	for _, domain := range searchDomains {
+		content := fmt.Sprintf("# Added by bamgate\n%s", nameserverLines)
+		path := "/etc/resolver/" + domain
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
+		}
+	}
+
+	return nil
+}
+
+// RevertDNS removes DNS configuration set by SetDNS on macOS by removing
+// the resolver files in /etc/resolver/ that were created by bamgate.
+func RevertDNS(_ string) error {
+	// Read all files in /etc/resolver/ and remove the ones we created.
+	entries, err := os.ReadDir("/etc/resolver")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading /etc/resolver: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := "/etc/resolver/" + entry.Name()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(string(data), "# Added by bamgate") {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("removing %s: %w", path, err)
+			}
+		}
+	}
+
 	return nil
 }

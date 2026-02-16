@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -28,11 +29,12 @@ const secretsFileName = "secrets.toml"
 // Config is the top-level configuration for bamgate.
 // It is persisted as a TOML file at DefaultConfigPath().
 type Config struct {
-	Cloudflare CloudflareConfig `toml:"cloudflare"`
-	Network    NetworkConfig    `toml:"network"`
-	Device     DeviceConfig     `toml:"device"`
-	STUN       STUNConfig       `toml:"stun"`
-	WebRTC     WebRTCConfig     `toml:"webrtc"`
+	Cloudflare CloudflareConfig          `toml:"cloudflare"`
+	Network    NetworkConfig             `toml:"network"`
+	Device     DeviceConfig              `toml:"device"`
+	STUN       STUNConfig                `toml:"stun"`
+	WebRTC     WebRTCConfig              `toml:"webrtc"`
+	Peers      map[string]PeerSelections `toml:"peers,omitempty"`
 }
 
 // CloudflareConfig stores Cloudflare account credentials used for deploying
@@ -88,17 +90,49 @@ type DeviceConfig struct {
 	// advertise ["192.168.1.0/24"] so remote peers can reach the home LAN.
 	Routes []string `toml:"routes,omitempty"`
 
+	// DNS is a list of DNS server IPs available through this device.
+	// These are advertised to peers via signaling metadata so remote peers
+	// can opt in to using them for name resolution. For example, a Kubernetes
+	// node might advertise ["10.96.0.10"] (CoreDNS ClusterIP).
+	DNS []string `toml:"dns,omitempty"`
+
+	// DNSSearch is a list of DNS search domains available through this device.
+	// These are advertised alongside DNS servers. For example,
+	// ["svc.cluster.local", "default.svc.cluster.local"].
+	DNSSearch []string `toml:"dns_search,omitempty"`
+
 	// AcceptRoutes controls whether this device installs subnet routes
 	// advertised by remote peers. When false (the default), only the peer's
 	// /32 tunnel address is added to WireGuard AllowedIPs — advertised LAN
 	// subnets are ignored. Set to true only when you know the remote subnets
 	// do not conflict with your local network.
+	//
+	// Deprecated: Use per-peer selections in [peers.<name>] sections instead.
+	// This field is kept for backward compatibility and will be removed in a
+	// future version. When per-peer selections exist, they take precedence.
 	AcceptRoutes bool `toml:"accept_routes,omitempty"`
 
 	// ForceRelay forces all WebRTC connections to use the TURN relay,
 	// bypassing direct (host/srflx) connectivity. Useful for testing
 	// the TURN relay path or when direct connectivity is unreliable.
 	ForceRelay bool `toml:"force_relay,omitempty"`
+}
+
+// PeerSelections records what capabilities the user has chosen to accept
+// from a specific remote peer. Written by `bamgate peers configure` and
+// read by the agent when a peer connects.
+type PeerSelections struct {
+	// Routes is the list of subnet routes (CIDR) the user chose to accept
+	// from this peer. Must be a subset of what the peer advertises.
+	Routes []string `toml:"routes,omitempty"`
+
+	// DNS is the list of DNS server IPs the user chose to accept from this
+	// peer. Must be a subset of what the peer advertises.
+	DNS []string `toml:"dns,omitempty"`
+
+	// DNSSearch is the list of DNS search domains the user chose to accept
+	// from this peer. Must be a subset of what the peer advertises.
+	DNSSearch []string `toml:"dns_search,omitempty"`
 }
 
 // STUNConfig lists the STUN servers used for ICE NAT traversal.
@@ -120,11 +154,12 @@ type WebRTCConfig struct {
 
 // configFile is the TOML representation for config.toml (world-readable, no secrets).
 type configFile struct {
-	Cloudflare cfConfigFile  `toml:"cloudflare"`
-	Network    netConfigFile `toml:"network"`
-	Device     devConfigFile `toml:"device"`
-	STUN       STUNConfig    `toml:"stun"`
-	WebRTC     WebRTCConfig  `toml:"webrtc"`
+	Cloudflare cfConfigFile              `toml:"cloudflare"`
+	Network    netConfigFile             `toml:"network"`
+	Device     devConfigFile             `toml:"device"`
+	STUN       STUNConfig                `toml:"stun"`
+	WebRTC     WebRTCConfig              `toml:"webrtc"`
+	Peers      map[string]PeerSelections `toml:"peers,omitempty"`
 }
 
 type cfConfigFile struct {
@@ -142,6 +177,8 @@ type devConfigFile struct {
 	Name         string   `toml:"name"`
 	Address      string   `toml:"address"`
 	Routes       []string `toml:"routes,omitempty"`
+	DNS          []string `toml:"dns,omitempty"`
+	DNSSearch    []string `toml:"dns_search,omitempty"`
 	AcceptRoutes bool     `toml:"accept_routes,omitempty"`
 	ForceRelay   bool     `toml:"force_relay,omitempty"`
 }
@@ -182,11 +219,14 @@ func toConfigFile(cfg *Config) *configFile {
 			Name:         cfg.Device.Name,
 			Address:      cfg.Device.Address,
 			Routes:       cfg.Device.Routes,
+			DNS:          cfg.Device.DNS,
+			DNSSearch:    cfg.Device.DNSSearch,
 			AcceptRoutes: cfg.Device.AcceptRoutes,
 			ForceRelay:   cfg.Device.ForceRelay,
 		},
 		STUN:   cfg.STUN,
 		WebRTC: cfg.WebRTC,
+		Peers:  cfg.Peers,
 	}
 }
 
@@ -416,6 +456,55 @@ func (c *Config) PublicKey() (Key, error) {
 		return Key{}, errors.New("device private key is not set")
 	}
 	return PublicKey(c.Device.PrivateKey), nil
+}
+
+// PeerSelection returns the per-peer selections for the named peer.
+// Returns an empty PeerSelections and false if no selections exist.
+func (c *Config) PeerSelection(peerName string) (PeerSelections, bool) {
+	if c.Peers == nil {
+		return PeerSelections{}, false
+	}
+	sel, ok := c.Peers[peerName]
+	return sel, ok
+}
+
+// SetPeerSelection stores per-peer selections for the named peer.
+func (c *Config) SetPeerSelection(peerName string, sel PeerSelections) {
+	if c.Peers == nil {
+		c.Peers = make(map[string]PeerSelections)
+	}
+	c.Peers[peerName] = sel
+}
+
+// HasPeerSelections returns true if any per-peer selections are configured.
+// When true, the legacy AcceptRoutes flag is ignored.
+func (c *Config) HasPeerSelections() bool {
+	return len(c.Peers) > 0
+}
+
+// BuildMetadata constructs a signaling metadata map from this device's
+// advertised capabilities (routes, DNS, search domains). Returns nil if
+// there is nothing to advertise.
+func (d *DeviceConfig) BuildMetadata() map[string]string {
+	meta := make(map[string]string)
+
+	if len(d.Routes) > 0 {
+		b, _ := json.Marshal(d.Routes)
+		meta["routes"] = string(b)
+	}
+	if len(d.DNS) > 0 {
+		b, _ := json.Marshal(d.DNS)
+		meta["dns"] = string(b)
+	}
+	if len(d.DNSSearch) > 0 {
+		b, _ := json.Marshal(d.DNSSearch)
+		meta["dns_search"] = string(b)
+	}
+
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
 }
 
 // ParseTOML decodes a TOML config from a string. This is used by the mobile
