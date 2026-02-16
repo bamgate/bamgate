@@ -60,6 +60,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
+    // Chrome Custom Tabs for in-app browser (OAuth device flow)
+    implementation("androidx.browser:browser:1.8.0")
+
     // CameraX + ML Kit for QR code scanning
     implementation("androidx.camera:camera-camera2:1.4.1")
     implementation("androidx.camera:camera-lifecycle:1.4.1")
