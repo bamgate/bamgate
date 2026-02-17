@@ -133,6 +133,11 @@ type Agent struct {
 	mu             sync.Mutex
 	peers          map[string]*peerState // peerID -> state
 	notifiedRoutes map[string]bool       // routes already sent via RouteUpdateCallback
+	ctx            context.Context       // lifecycle context, set in Run()
+
+	// Network change debounce — prevents rapid-fire ICE restarts when
+	// Android sends multiple connectivity callbacks in quick succession.
+	lastNetworkChange time.Time
 
 	// JWT token management.
 	configPath string // path to config file, for persisting rotated refresh tokens
@@ -169,6 +174,11 @@ const (
 	// NetworkManager can reset per-interface forwarding on DHCP renewal,
 	// wifi reconnect, or suspend/resume.
 	forwardingCheckInterval = 30 * time.Second
+
+	// networkChangeDebounce prevents rapid-fire ICE restarts when Android
+	// sends multiple connectivity callbacks in quick succession (e.g.
+	// onAvailable + onCapabilitiesChanged firing within milliseconds).
+	networkChangeDebounce = 3 * time.Second
 )
 
 // peerState tracks the state of a single remote peer.
@@ -217,6 +227,8 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) *Agent {
 // error occurs. It creates the TUN device, WireGuard device, connects to
 // signaling, and processes peer events.
 func (a *Agent) Run(ctx context.Context) error {
+	a.ctx = ctx
+
 	// 1. Create the bridge Bind.
 	a.bind = bridge.NewBind(a.log)
 
@@ -917,6 +929,68 @@ func (a *Agent) removePeer(peerID string) {
 		if err := ps.rtcPeer.Close(); err != nil {
 			a.log.Error("closing WebRTC peer", "peer_id", peerID, "error", err)
 		}
+	}
+}
+
+// NotifyNetworkChange should be called when the underlying network changes
+// (e.g. Android sleep/wake, wifi ↔ mobile data switch). It proactively
+// triggers ICE restarts on all connected peers and forces the signaling
+// WebSocket to reconnect if it is disconnected.
+//
+// This avoids waiting for ICE consent freshness timeouts (~30s) or signaling
+// reconnect backoff delays, recovering connectivity as fast as possible.
+//
+// Safe to call from any goroutine. No-op if the agent is not running.
+func (a *Agent) NotifyNetworkChange() {
+	if a.sigClient == nil {
+		return
+	}
+
+	// Debounce: Android may fire multiple connectivity callbacks within
+	// milliseconds (onAvailable + onCapabilitiesChanged). Only act on
+	// the first one in each debounce window.
+	a.mu.Lock()
+	if time.Since(a.lastNetworkChange) < networkChangeDebounce {
+		a.mu.Unlock()
+		a.log.Debug("network change debounced")
+		return
+	}
+	a.lastNetworkChange = time.Now()
+	a.mu.Unlock()
+
+	a.log.Info("network change detected, probing connections")
+
+	// Kick signaling — if the WebSocket is dead, this triggers an
+	// immediate reconnect (skipping exponential backoff).
+	a.sigClient.ForceReconnect()
+
+	// Trigger ICE restart on every connected peer. Cancel grace timers
+	// and reset restart counters so we get a full 3 attempts.
+	a.mu.Lock()
+	peerIDs := make([]string, 0, len(a.peers))
+	for id, ps := range a.peers {
+		// Cancel any pending grace timer — we want to restart now.
+		if ps.restartTimer != nil {
+			ps.restartTimer.Stop()
+			ps.restartTimer = nil
+		}
+		// Reset restart counter so the peer gets a fresh set of attempts.
+		ps.iceRestarts = 0
+		ps.pendingRestart = false
+		peerIDs = append(peerIDs, id)
+	}
+	a.mu.Unlock()
+
+	// Attempt ICE restart on each peer outside the lock.
+	// Use the agent's lifecycle context so restarts are cancelled if the
+	// agent shuts down. The goroutines ensure the caller (Android UI
+	// thread / broadcast receiver) does not block.
+	ctx := a.ctx
+	if ctx == nil {
+		return
+	}
+	for _, id := range peerIDs {
+		go a.attemptICERestart(ctx, id)
 	}
 }
 

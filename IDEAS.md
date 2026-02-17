@@ -18,7 +18,7 @@ priority list.
 - Invite code paste fallback (no camera)
 - Config import/export
 - Battery optimization whitelist prompt
-- Network change handling (ConnectivityManager -> ICE restart)
+- ~~Network change handling (ConnectivityManager -> ICE restart)~~ — **Done.** `ConnectivityManager.NetworkCallback` + `ACTION_USER_PRESENT` receiver in VPN service, `Agent.NotifyNetworkChange()` with debounce, `signaling.ForceReconnect()` for instant reconnection.
 - Always-on VPN support
 - Per-app VPN (`addDisallowedApplication`)
 - Connection quality indicator

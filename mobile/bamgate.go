@@ -215,6 +215,20 @@ func (t *Tunnel) Stop() {
 	}
 }
 
+// NotifyNetworkChange signals the Go tunnel that the underlying network has
+// changed (e.g. wifi reconnect after sleep, switch to mobile data). This
+// triggers immediate ICE restarts and a signaling reconnect, recovering
+// connectivity much faster than waiting for timeout-based detection.
+//
+// Call this from Android's ConnectivityManager.NetworkCallback or when the
+// device wakes from sleep. Safe to call from any thread; no-op if the
+// tunnel is not running.
+func (t *Tunnel) NotifyNetworkChange() {
+	if t.ag != nil {
+		t.ag.NotifyNetworkChange()
+	}
+}
+
 // IsRunning returns whether the tunnel is currently active.
 func (t *Tunnel) IsRunning() bool {
 	t.mu.Lock()

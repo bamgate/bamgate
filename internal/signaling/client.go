@@ -86,8 +86,9 @@ type Client struct {
 	done   chan struct{}
 	cancel context.CancelFunc
 
-	mu   sync.Mutex
-	conn *websocket.Conn
+	mu       sync.Mutex
+	conn     *websocket.Conn
+	reconnCh chan struct{} // signals receiveLoop to reconnect immediately
 }
 
 // NewClient creates a new signaling client with the given configuration.
@@ -105,10 +106,11 @@ func NewClient(cfg ClientConfig) *Client {
 	}
 
 	return &Client{
-		cfg:   cfg,
-		log:   log,
-		msgCh: make(chan protocol.Message, bufSize),
-		done:  make(chan struct{}),
+		cfg:      cfg,
+		log:      log,
+		msgCh:    make(chan protocol.Message, bufSize),
+		done:     make(chan struct{}),
+		reconnCh: make(chan struct{}, 1),
 	}
 }
 
@@ -174,6 +176,32 @@ func (c *Client) Send(ctx context.Context, msg protocol.Message) error {
 
 	c.log.Debug("sent message", "type", msg.MessageType())
 	return nil
+}
+
+// ForceReconnect triggers an immediate reconnection attempt. If the current
+// WebSocket connection is alive it is closed first, causing the receive loop
+// to enter the reconnect path. A signal is sent so the next reconnect attempt
+// skips the backoff delay. This is used when the underlying network changes
+// (e.g. Android sleep/wake, wifi ↔ mobile switch) and we want to re-establish
+// signaling as fast as possible.
+//
+// Safe to call from any goroutine. No-op if reconnection is not enabled.
+func (c *Client) ForceReconnect() {
+	if !c.cfg.Reconnect.Enabled {
+		return
+	}
+
+	c.log.Info("force reconnect requested (network change)")
+
+	// Signal the receive loop to skip backoff on the next attempt.
+	select {
+	case c.reconnCh <- struct{}{}:
+	default:
+		// Already signalled.
+	}
+
+	// Close the current connection to unblock readMessages().
+	c.closeConn()
 }
 
 // Close gracefully shuts down the client, closing the WebSocket connection
@@ -307,6 +335,9 @@ func (c *Client) readMessages(ctx context.Context) error {
 
 // reconnect attempts to re-establish the connection with exponential backoff.
 // Returns true if reconnection succeeded, false if it should give up.
+//
+// If ForceReconnect() was called, the first attempt is made immediately
+// (no backoff delay).
 func (c *Client) reconnect(ctx context.Context) bool {
 	initialDelay := c.cfg.Reconnect.InitialDelay
 	if initialDelay <= 0 {
@@ -318,19 +349,31 @@ func (c *Client) reconnect(ctx context.Context) bool {
 	}
 	maxAttempts := c.cfg.Reconnect.MaxAttempts
 
+	// Check if a force-reconnect was requested — skip backoff on the first attempt.
+	immediate := false
+	select {
+	case <-c.reconnCh:
+		immediate = true
+	default:
+	}
+
 	for attempt := 1; maxAttempts == 0 || attempt <= maxAttempts; attempt++ {
-		// Exponential backoff: initialDelay * 2^(attempt-1), capped at maxDelay.
-		backoff := time.Duration(float64(initialDelay) * math.Pow(2, float64(attempt-1)))
-		if backoff > maxDelay {
-			backoff = maxDelay
-		}
+		if immediate && attempt == 1 {
+			c.log.Info("reconnecting immediately (forced)", "attempt", attempt)
+		} else {
+			// Exponential backoff: initialDelay * 2^(attempt-1), capped at maxDelay.
+			backoff := time.Duration(float64(initialDelay) * math.Pow(2, float64(attempt-1)))
+			if backoff > maxDelay {
+				backoff = maxDelay
+			}
 
-		c.log.Info("reconnecting", "attempt", attempt, "backoff", backoff)
+			c.log.Info("reconnecting", "attempt", attempt, "backoff", backoff)
 
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(backoff):
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(backoff):
+			}
 		}
 
 		if err := c.dial(ctx); err != nil {

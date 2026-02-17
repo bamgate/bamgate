@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-16 (session 22)
+Last updated: 2026-02-16 (session 23)
 
 ## Current Phase
 
@@ -119,6 +119,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.12.0 | 2026-02-16 | Android network change + sleep/wake recovery: proactive ICE restart and signaling reconnect on connectivity change or screen unlock |
 | v1.11.0 | 2026-02-16 | `bamgate restart`, `bamgate login`, `bamgate worker` (install/update/uninstall/info), Cloudflare `DeleteWorker` API |
 | v1.10.0 | 2026-02-16 | CLI theming, token borrowing from daemon, Android theme + PeersScreen rework, token rotation callback |
 | v1.9.1 | 2026-02-16 | Android peer management screen (routes, DNS, search domain checkboxes) |
@@ -154,6 +155,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 23 | 2026-02-16 | Android network change recovery: `ConnectivityManager.NetworkCallback` + `ACTION_USER_PRESENT` BroadcastReceiver in VPN service notify Go tunnel on network change or screen unlock, `Agent.NotifyNetworkChange()` with 3s debounce triggers immediate ICE restart on all peers and signaling force-reconnect, `signaling.Client.ForceReconnect()` skips exponential backoff for instant reconnection, mobile `Tunnel.NotifyNetworkChange()` exposed via gomobile |
 | 22 | 2026-02-16 | `bamgate restart` command (single-step daemon restart), `bamgate login` command (re-authenticate without full setup, preserves config), `bamgate worker` command group (install/update/uninstall/info for Cloudflare Worker management), `DeleteWorker` Cloudflare API method, interactive CF credential prompting for worker commands |
 | 21 | 2026-02-16 | CLI theming (lipgloss palette, colored status/peers/devices output, custom huh theme), token borrowing from daemon via `GET /auth/token` control socket endpoint, `TokenUpdateCallback` for Android refresh token persistence, `TunnelHolder` singleton for VPN service/UI tunnel sharing, PeersScreen rework (immutable state, batched Apply & Reconnect), Android dark theme with brand palette, remove deprecated `accept_routes` toggle, mobile `GetConfig()` method |
 | 20 | 2026-02-16 | Peer capability advertisement: metadata map on signaling protocol, DNS/search domain config fields, per-peer `[peers.<name>]` selections in config, `bamgate peers` + `bamgate peers configure` TUI (charmbracelet/huh), control plane `/peers/offerings` + `/peers/configure` endpoints, DNS installation via resolvectl (Linux) / /etc/resolver (macOS), Android VPN DNS from peer selections, worker JS shim + Go hub metadata forwarding, Android PeersScreen with checkbox UI for routes/DNS/search domains, sealed Screen navigation in MainActivity |

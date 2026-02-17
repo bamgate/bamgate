@@ -4,7 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -43,6 +50,16 @@ class BamgateVpnService : VpnService() {
     // Tracks the extra routes learned from peers (e.g. "192.168.1.0/24").
     // These are added to the VPN builder on restart.
     private val peerRoutes = mutableListOf<String>()
+
+    // Network change detection — notifies the Go tunnel when the underlying
+    // network changes (wifi reconnect, mobile data switch) so it can
+    // proactively restart ICE and reconnect signaling.
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    // Screen unlock detection — notifies the Go tunnel when the user unlocks
+    // the device after sleep, in case the network didn't technically change
+    // but ICE/signaling connections went stale during doze.
+    private var screenUnlockReceiver: BroadcastReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -160,6 +177,12 @@ class BamgateVpnService : VpnService() {
                         }
                     }
                 })
+
+                // Register network change and screen unlock listeners so we can
+                // proactively reconnect when the device wakes from sleep or
+                // switches networks.
+                registerNetworkChangeListener(t)
+                registerScreenUnlockReceiver(t)
 
                 // Parse the tunnel subnet for the initial VPN route.
                 val tunnelSubnet = t.tunnelSubnet
@@ -288,6 +311,9 @@ class BamgateVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        unregisterNetworkChangeListener()
+        unregisterScreenUnlockReceiver()
+
         // Clear peer routes so restart loop exits.
         synchronized(peerRoutes) {
             peerRoutes.clear()
@@ -315,6 +341,86 @@ class BamgateVpnService : VpnService() {
         val prefix = if (parts.size > 1) parts[1].toIntOrNull() ?: 24 else 24
         return Pair(ip, prefix)
     }
+
+    // --- Network change and screen unlock listeners ---
+
+    /**
+     * Registers a ConnectivityManager.NetworkCallback that fires when the
+     * underlying (non-VPN) network changes. This covers wifi reconnect after
+     * sleep, mobile data failover, and airplane mode toggle.
+     */
+    private fun registerNetworkChangeListener(t: mobile.Tunnel) {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+
+        // Request notifications for internet-capable transports (wifi + cellular).
+        // Excludes VPN transport so we don't react to our own VPN going up/down.
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+            .build()
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.i(TAG, "Network available, notifying tunnel")
+                t.notifyNetworkChange()
+            }
+
+            override fun onLost(network: Network) {
+                Log.i(TAG, "Network lost, notifying tunnel")
+                t.notifyNetworkChange()
+            }
+        }
+
+        cm.registerNetworkCallback(request, callback)
+        networkCallback = callback
+        Log.i(TAG, "Registered network change listener")
+    }
+
+    private fun unregisterNetworkChangeListener() {
+        val cb = networkCallback ?: return
+        networkCallback = null
+        try {
+            val cm = getSystemService(ConnectivityManager::class.java)
+            cm?.unregisterNetworkCallback(cb)
+            Log.i(TAG, "Unregistered network change listener")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to unregister network callback", e)
+        }
+    }
+
+    /**
+     * Registers a BroadcastReceiver for ACTION_USER_PRESENT (device unlock).
+     * This catches the case where the network didn't technically change (same
+     * wifi SSID) but ICE/signaling connections went stale during doze.
+     */
+    private fun registerScreenUnlockReceiver(t: mobile.Tunnel) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_USER_PRESENT) {
+                    Log.i(TAG, "Screen unlocked, notifying tunnel")
+                    t.notifyNetworkChange()
+                }
+            }
+        }
+
+        registerReceiver(receiver, IntentFilter(Intent.ACTION_USER_PRESENT))
+        screenUnlockReceiver = receiver
+        Log.i(TAG, "Registered screen unlock receiver")
+    }
+
+    private fun unregisterScreenUnlockReceiver() {
+        val receiver = screenUnlockReceiver ?: return
+        screenUnlockReceiver = null
+        try {
+            unregisterReceiver(receiver)
+            Log.i(TAG, "Unregistered screen unlock receiver")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to unregister screen unlock receiver", e)
+        }
+    }
+
+    // --- Notifications ---
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
