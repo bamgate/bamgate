@@ -250,6 +250,33 @@ func (c *Client) DeployWorker(ctx context.Context, input DeployWorkerInput) erro
 	return nil
 }
 
+// DeleteWorker removes a worker script from the Cloudflare account.
+func (c *Client) DeleteWorker(ctx context.Context, accountID, scriptName string) error {
+	path := fmt.Sprintf("/accounts/%s/workers/scripts/%s", accountID, scriptName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, cfAPIBase+path, nil)
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("deleting worker: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("worker %q not found", scriptName)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("deleting worker: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+	}
+
+	return nil
+}
+
 // EnableWorkerSubdomain ensures the worker is reachable on the workers.dev subdomain.
 func (c *Client) EnableWorkerSubdomain(ctx context.Context, accountID, scriptName string) error {
 	path := fmt.Sprintf("/accounts/%s/workers/scripts/%s/subdomain", accountID, scriptName)
