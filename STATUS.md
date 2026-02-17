@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-16 (session 24)
+Last updated: 2026-02-17 (session 25)
 
 ## Current Phase
 
@@ -119,6 +119,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.13.1 | 2026-02-17 | Fix JWT expiry after suspend/resume, fix reconnect backoff overflow (45k request storm), fix ICE restart glare after sleep |
 | v1.13.0 | 2026-02-16 | Merge `peers` into `devices`: unified device list (server + live peers), lipgloss table, interactive revoke/configure, Android DevicesScreen, README rewrite |
 | v1.12.0 | 2026-02-16 | Android network change + sleep/wake recovery: proactive ICE restart and signaling reconnect on connectivity change or screen unlock |
 | v1.11.0 | 2026-02-16 | `bamgate restart`, `bamgate login`, `bamgate worker` (install/update/uninstall/info), Cloudflare `DeleteWorker` API |
@@ -156,6 +157,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 25 | 2026-02-17 | Fix three bugs causing broken connections after laptop suspend/resume: (1) signaling reconnect loop retries with expired JWT indefinitely — add `OnAuthFailure` callback to trigger immediate JWT refresh on 401; (2) exponential backoff overflows to zero at high attempt counts (`math.Pow(2, 45000)` → `+Inf` → negative `time.Duration`), causing ~45k requests in minutes — cap exponent and guard against `<= 0`; (3) ICE restart fails with `InvalidModificationError` when PeerConnection is stuck in `have-local-offer` from unanswered previous restart — rollback to `stable` before creating new offer |
 | 24 | 2026-02-16 | Consolidate `peers` into `devices`: delete `cmd_peers.go`, rewrite `cmd_devices.go` with merged server device list + live peer data, `lipgloss/table` for ANSI-safe column rendering, interactive `devices revoke` (huh.Select + huh.Confirm), fix current device showing offline, mobile bindings (`ListDevices`, `GetDeviceID`, `CurrentJWT`), Android `DevicesScreen` replacing `PeersScreen`, delete outdated docs (`android-status.md`, `macos-status.md`), full README rewrite, table cell padding for readability |
 | 23 | 2026-02-16 | Android network change recovery: `ConnectivityManager.NetworkCallback` + `ACTION_USER_PRESENT` BroadcastReceiver in VPN service notify Go tunnel on network change or screen unlock, `Agent.NotifyNetworkChange()` with 3s debounce triggers immediate ICE restart on all peers and signaling force-reconnect, `signaling.Client.ForceReconnect()` skips exponential backoff for instant reconnection, mobile `Tunnel.NotifyNetworkChange()` exposed via gomobile |
 | 22 | 2026-02-16 | `bamgate restart` command (single-step daemon restart), `bamgate login` command (re-authenticate without full setup, preserves config), `bamgate worker` command group (install/update/uninstall/info for Cloudflare Worker management), `DeleteWorker` Cloudflare API method, interactive CF credential prompting for worker commands |

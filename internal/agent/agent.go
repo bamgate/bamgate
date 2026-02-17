@@ -309,7 +309,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		go a.jwtRefreshLoop(ctx)
 	}
 
-	a.sigClient = signaling.NewClient(signaling.ClientConfig{
+	// Build the signaling client config. If OAuth credentials are present,
+	// hook up the auth failure callback so that 401 errors during reconnection
+	// trigger an immediate JWT refresh instead of retrying with stale tokens.
+	sigCfg := signaling.ClientConfig{
 		ServerURL:     a.cfg.Network.ServerURL,
 		PeerID:        a.cfg.Device.Name,
 		PublicKey:     pubKey.String(),
@@ -321,7 +324,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		Reconnect: signaling.ReconnectConfig{
 			Enabled: true,
 		},
-	})
+	}
+	if a.cfg.Network.DeviceID != "" && a.cfg.Network.RefreshToken != "" {
+		sigCfg.OnAuthFailure = func() error {
+			return a.refreshJWT(ctx)
+		}
+	}
+	a.sigClient = signaling.NewClient(sigCfg)
 
 	if err := a.sigClient.Connect(ctx); err != nil {
 		return fmt.Errorf("connecting to signaling server: %w", err)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,13 @@ type ClientConfig struct {
 	// the signaling server. Called on each dial attempt so it can return a
 	// fresh JWT after token refresh. If nil, no Authorization header is sent.
 	TokenProvider func() string
+
+	// OnAuthFailure is called when the signaling server rejects a connection
+	// with HTTP 401. The callback should refresh the JWT and return nil on
+	// success, or an error if refreshing failed. The reconnect loop pauses
+	// retries until this callback returns. If nil, 401 errors are treated
+	// like any other dial failure.
+	OnAuthFailure func() error
 
 	// Logger is the structured logger to use. If nil, slog.Default() is used.
 	Logger *slog.Logger
@@ -333,11 +341,21 @@ func (c *Client) readMessages(ctx context.Context) error {
 	}
 }
 
+// isHTTP401 checks whether an error is an HTTP 401 response from the server.
+func isHTTP401(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "status code 101 but got 401")
+}
+
 // reconnect attempts to re-establish the connection with exponential backoff.
 // Returns true if reconnection succeeded, false if it should give up.
 //
 // If ForceReconnect() was called, the first attempt is made immediately
 // (no backoff delay).
+//
+// When the server returns HTTP 401 and an OnAuthFailure callback is configured,
+// the callback is invoked to refresh credentials before the next attempt. The
+// backoff counter is reset after a successful refresh so that the retry with
+// fresh credentials happens promptly.
 func (c *Client) reconnect(ctx context.Context) bool {
 	initialDelay := c.cfg.Reconnect.InitialDelay
 	if initialDelay <= 0 {
@@ -362,8 +380,14 @@ func (c *Client) reconnect(ctx context.Context) bool {
 			c.log.Info("reconnecting immediately (forced)", "attempt", attempt)
 		} else {
 			// Exponential backoff: initialDelay * 2^(attempt-1), capped at maxDelay.
-			backoff := time.Duration(float64(initialDelay) * math.Pow(2, float64(attempt-1)))
-			if backoff > maxDelay {
+			// Guard against floating-point overflow for large attempt counts —
+			// math.Pow(2, N) overflows to +Inf for large N, and converting that
+			// to time.Duration wraps to a negative or zero value, defeating the cap.
+			backoff := maxDelay
+			if attempt <= 62 { // 2^62 is the largest power of 2 that fits in int64
+				backoff = time.Duration(float64(initialDelay) * math.Pow(2, float64(attempt-1)))
+			}
+			if backoff <= 0 || backoff > maxDelay {
 				backoff = maxDelay
 			}
 
@@ -378,6 +402,21 @@ func (c *Client) reconnect(ctx context.Context) bool {
 
 		if err := c.dial(ctx); err != nil {
 			c.log.Warn("reconnection failed", "attempt", attempt, "error", err)
+
+			// On 401, invoke the auth failure callback to refresh credentials.
+			// If it succeeds, reset the backoff so the next attempt is immediate
+			// with the fresh token. If it fails, continue normal backoff.
+			if isHTTP401(err) && c.cfg.OnAuthFailure != nil {
+				c.log.Info("server returned 401, refreshing credentials")
+				if refreshErr := c.cfg.OnAuthFailure(); refreshErr != nil {
+					c.log.Error("credential refresh failed", "error", refreshErr)
+				} else {
+					c.log.Info("credentials refreshed, retrying immediately")
+					// Reset backoff: next iteration uses attempt=1 timing.
+					attempt = 0
+					immediate = true
+				}
+			}
 			continue
 		}
 

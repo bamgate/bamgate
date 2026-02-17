@@ -202,7 +202,22 @@ func (p *Peer) SetAnswer(sdp string) error {
 // existing data channel and SCTP association survive — only the ICE transport
 // is renegotiated. The caller should send the returned SDP to the remote peer,
 // then apply the answer via SetAnswer.
+//
+// If the PeerConnection is already in the "have-local-offer" state (e.g. from
+// a previous ICE restart whose answer never arrived because signaling was down),
+// the pending offer is rolled back to "stable" before creating the new one.
 func (p *Peer) RestartICE() (string, error) {
+	// If we're stuck in have-local-offer (previous restart offer was never
+	// answered), roll back to stable so we can create a fresh offer.
+	if p.pc.SignalingState() == webrtc.SignalingStateHaveLocalOffer {
+		p.log.Info("rolling back pending offer before ICE restart")
+		if err := p.pc.SetLocalDescription(webrtc.SessionDescription{
+			Type: webrtc.SDPTypeRollback,
+		}); err != nil {
+			return "", fmt.Errorf("rolling back local description: %w", err)
+		}
+	}
+
 	offer, err := p.pc.CreateOffer(&webrtc.OfferOptions{ICERestart: true})
 	if err != nil {
 		return "", fmt.Errorf("creating ICE restart offer: %w", err)
