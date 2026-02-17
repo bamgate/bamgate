@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -33,7 +33,7 @@ fun HomeScreen(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onSettings: () -> Unit,
-    onPeers: () -> Unit
+    onDevices: () -> Unit
 ) {
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -45,10 +45,10 @@ fun HomeScreen(
                 .padding(8.dp)
         ) {
             if (isConnected) {
-                IconButton(onClick = onPeers) {
+                IconButton(onClick = onDevices) {
                     Icon(
-                        imageVector = Icons.Filled.People,
-                        contentDescription = "Peers",
+                        imageVector = Icons.Filled.Devices,
+                        contentDescription = "Devices",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }

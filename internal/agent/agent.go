@@ -287,7 +287,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
-	// 5. Start control server for "bamgate status" and "bamgate peers".
+	// 5. Start control server for "bamgate status" and "bamgate devices".
 	a.startedAt = time.Now()
 	a.ctrlSrv = control.NewServer(control.ResolveSocketPath(), a.Status, a.log)
 	a.ctrlSrv.SetOfferingsProvider(a.PeerOfferings)
@@ -862,7 +862,7 @@ func (a *Agent) resolveAcceptedRoutes(peerID string, ps *peerState) []string {
 	}
 
 	if len(ps.routes) > 0 {
-		a.log.Info("peer advertises routes but none are accepted (configure with 'bamgate peers configure')",
+		a.log.Info("peer advertises routes but none are accepted (configure with 'bamgate devices configure')",
 			"peer_id", peerID, "routes", ps.routes)
 	}
 	return nil
@@ -1285,6 +1285,14 @@ func (a *Agent) shutdown() {
 // tokenProvider returns the current JWT for use in Authorization headers.
 // It is passed to signaling.ClientConfig and turn.WSProxyDialer.
 func (a *Agent) tokenProvider() string {
+	a.tokenMu.RLock()
+	defer a.tokenMu.RUnlock()
+	return a.jwtToken
+}
+
+// CurrentJWT returns the agent's current JWT access token. This is used by
+// the mobile layer to make authenticated API calls (e.g. listing devices).
+func (a *Agent) CurrentJWT() string {
 	a.tokenMu.RLock()
 	defer a.tokenMu.RUnlock()
 	return a.jwtToken

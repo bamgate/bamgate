@@ -20,7 +20,7 @@ import com.bamgate.app.service.BamgateVpnService
 import com.bamgate.app.service.TunnelHolder
 import com.bamgate.app.service.VpnStateMonitor
 import com.bamgate.app.ui.HomeScreen
-import com.bamgate.app.ui.PeersScreen
+import com.bamgate.app.ui.DevicesScreen
 import com.bamgate.app.ui.SettingsScreen
 import com.bamgate.app.ui.SetupScreen
 import com.bamgate.app.ui.theme.BamgateTheme
@@ -30,7 +30,7 @@ import mobile.Mobile
 private sealed class Screen {
     data object Home : Screen()
     data object Settings : Screen()
-    data object Peers : Screen()
+    data object Devices : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -92,8 +92,8 @@ class MainActivity : ComponentActivity() {
                                 onDisconnectVpn = { stopVpnService() }
                             )
                         }
-                        currentScreen is Screen.Peers -> {
-                            PeersScreen(
+                        currentScreen is Screen.Devices -> {
+                            DevicesScreen(
                                 tunnel = TunnelHolder.tunnel,
                                 configRepo = configRepo,
                                 isVpnRunning = isVpnActive,
@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
                                 onConnect = { requestVpnPermission() },
                                 onDisconnect = { stopVpnService() },
                                 onSettings = { currentScreen = Screen.Settings },
-                                onPeers = { currentScreen = Screen.Peers }
+                                onDevices = { currentScreen = Screen.Devices }
                             )
                         }
                     }

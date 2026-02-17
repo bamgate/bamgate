@@ -69,7 +69,7 @@ type StatusProvider func() Status
 
 // PeerOfferings describes what a connected peer advertises and what the
 // local user has currently accepted. Used by the /peers/offerings endpoint
-// and the `bamgate peers` CLI command.
+// and the `bamgate devices` CLI command.
 type PeerOfferings struct {
 	// PeerID is the peer's name/identifier.
 	PeerID string `json:"peer_id"`
@@ -319,7 +319,7 @@ func FetchStatus(socketPath string) (*Status, error) {
 }
 
 // FetchOfferings connects to a running control server and returns peer
-// offerings. This is used by the "bamgate peers" CLI command.
+// offerings. This is used by the "bamgate devices" CLI command.
 func FetchOfferings(socketPath string) ([]PeerOfferings, error) {
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -349,7 +349,7 @@ func FetchOfferings(socketPath string) ([]PeerOfferings, error) {
 }
 
 // SendConfigure sends a peer configuration request to the running agent.
-// This is used by the "bamgate peers configure" CLI command.
+// This is used by the "bamgate devices configure" CLI command.
 func SendConfigure(socketPath string, req ConfigureRequest) error {
 	client := &http.Client{
 		Transport: &http.Transport{

@@ -399,6 +399,59 @@ func (t *Tunnel) GetServerURL() string {
 	return t.cfg.Network.ServerURL
 }
 
+// GetDeviceID returns the device ID from the config. This is the unique
+// identifier assigned by the server during registration.
+func (t *Tunnel) GetDeviceID() string {
+	return t.cfg.Network.DeviceID
+}
+
+// ListDevices fetches all devices registered on the network from the server.
+// Returns a JSON-encoded array of device objects. Each object has:
+//
+//	{"device_id": "...", "device_name": "...", "address": "...",
+//	 "created_at": 1234567890, "last_seen_at": 1234567890, "revoked": false}
+//
+// Requires the tunnel to be running (uses the agent's JWT for authentication).
+// Returns "[]" if the tunnel is not running or the request fails.
+func (t *Tunnel) ListDevices() (string, error) {
+	if t.ag == nil {
+		return "[]", fmt.Errorf("tunnel is not running")
+	}
+
+	jwt := t.ag.CurrentJWT()
+	if jwt == "" {
+		return "[]", fmt.Errorf("not authenticated yet")
+	}
+
+	baseURL := httpBaseURL(t.cfg.Network.ServerURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	result, err := auth.ListDevices(ctx, baseURL, jwt)
+	if err != nil {
+		return "[]", fmt.Errorf("listing devices: %w", err)
+	}
+
+	data, err := json.Marshal(result.Devices)
+	if err != nil {
+		return "[]", fmt.Errorf("encoding devices: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// httpBaseURL converts the WSS signaling URL to an HTTPS base URL for REST
+// API calls.
+func httpBaseURL(serverURL string) string {
+	u := strings.Replace(serverURL, "wss://", "https://", 1)
+	u = strings.Replace(u, "ws://", "http://", 1)
+	if idx := strings.Index(u, "/connect"); idx != -1 {
+		u = u[:idx]
+	}
+	return u
+}
+
 // GetConfig returns the tunnel's current in-memory configuration as a TOML
 // string. This includes any changes made via ConfigurePeer() that haven't
 // been persisted yet. The caller can save this to DataStore.

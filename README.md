@@ -38,6 +38,10 @@ To install a specific version:
 BAMGATE_VERSION=0.5.0 curl -fsSL https://raw.githubusercontent.com/bamgate/bamgate/main/install.sh | sh
 ```
 
+### Android
+
+Download the latest APK from [GitHub Releases](https://github.com/bamgate/bamgate/releases). Use `bamgate qr` on an existing device to generate a QR code for easy setup.
+
 ### Build from source
 
 ```bash
@@ -53,21 +57,17 @@ sudo cp bamgate /usr/local/bin/
 sudo bamgate setup
 ```
 
-This walks you through deploying the signaling server, generating WireGuard keys, and configuring the device. You'll need a [Cloudflare API token](https://dash.cloudflare.com/profile/api-tokens).
+This walks you through authenticating with GitHub, deploying the signaling server to Cloudflare, generating WireGuard keys, and configuring the device. You'll need a [GitHub](https://github.com) account and a [Cloudflare API token](https://dash.cloudflare.com/profile/api-tokens).
 
 ### Additional devices
 
-On the first device, generate an invite code:
-
-```bash
-sudo bamgate invite
-```
-
-On the new device, run setup with the invite code:
+On the new device, run setup and authenticate with the same GitHub account:
 
 ```bash
 sudo bamgate setup
 ```
+
+The setup wizard detects that a network already exists and joins it. Each device gets an auto-assigned tunnel address.
 
 ### Connect
 
@@ -88,6 +88,14 @@ Stop the daemon:
 sudo bamgate down
 ```
 
+### Manage devices
+
+```bash
+bamgate devices                 # list all devices (online status, capabilities)
+bamgate devices configure       # interactively accept routes, DNS from online devices
+bamgate devices revoke <id>     # revoke a device
+```
+
 ### Upgrade
 
 ```bash
@@ -106,8 +114,9 @@ sudo bamgate uninstall
 
 - Zero exposed ports on the home network
 - No VPS required — runs entirely on Cloudflare's free tier
-- Single static binary for Linux and macOS
+- Single static binary for Linux and macOS, plus an Android app
 - WireGuard encryption end-to-end, with DTLS as an additional layer
+- GitHub OAuth authentication — no shared secrets or invite tokens
 
 ## Documentation
 

@@ -205,7 +205,7 @@ cmd/bamgate/           # CLI entry point (main package)
 cmd/bamgate-hub/       # Standalone signaling hub for local/LAN testing
 install.sh             # Universal install/upgrade script
 contrib/               # systemd service file
-docs/                  # Supplementary docs (android-status, testing-lan)
+docs/                  # Supplementary docs (testing-lan)
 mobile/                # gomobile binding package (built by `make aar`)
 android/               # Android app (Kotlin/Gradle, built by `make android`)
 third_party/anet/      # Vendored fork of wlynxg/anet (go.mod replace)

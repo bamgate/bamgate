@@ -119,7 +119,7 @@ type DeviceConfig struct {
 }
 
 // PeerSelections records what capabilities the user has chosen to accept
-// from a specific remote peer. Written by `bamgate peers configure` and
+// from a specific remote peer. Written by `bamgate devices configure` and
 // read by the agent when a peer connects.
 type PeerSelections struct {
 	// Routes is the list of subnet routes (CIDR) the user chose to accept

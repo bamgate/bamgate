@@ -29,7 +29,6 @@ const (
 
 var (
 	// Base styles for TUI elements.
-	styleHeader  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorYellow))
 	styleKey     = lipgloss.NewStyle().Foreground(lipgloss.Color(colorBlue)) // Blue for keys (Device:, etc.)
 	styleActive  = lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
 	styleRevoked = lipgloss.NewStyle().Foreground(lipgloss.Color(colorRed))
