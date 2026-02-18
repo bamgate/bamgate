@@ -1,0 +1,72 @@
+# Docker Compose for bamgate e2e tests.
+#
+# Topology: 1 signaling hub + 3 peers (alpha, bravo, charlie).
+# Each peer runs a real bamgate agent with a real TUN device and
+# WireGuard tunnel. WebRTC ICE uses host candidates on the Docker
+# bridge network — no TURN needed.
+#
+# Configs are generated at test time and mounted from ./configs/.
+
+services:
+  hub:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+    entrypoint: ["bamgate-hub"]
+    command: ["-addr", ":8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "cat /proc/net/tcp6 | grep -q 1F90"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+
+  alpha:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+    command: ["up", "--config", "/etc/bamgate/config.toml"]
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    volumes:
+      - ./configs/alpha:/etc/bamgate:ro,z
+    depends_on:
+      hub:
+        condition: service_healthy
+
+  bravo:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+    command: ["up", "--config", "/etc/bamgate/config.toml"]
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    volumes:
+      - ./configs/bravo:/etc/bamgate:ro,z
+    depends_on:
+      hub:
+        condition: service_healthy
+
+  charlie:
+    build:
+      context: ../..
+      dockerfile: test/e2e/Dockerfile
+    command: ["up", "--config", "/etc/bamgate/config.toml"]
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    volumes:
+      - ./configs/charlie:/etc/bamgate:ro,z
+    depends_on:
+      hub:
+        condition: service_healthy

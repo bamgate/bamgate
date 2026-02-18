@@ -52,8 +52,9 @@ type Peer struct {
 	pc   *webrtc.PeerConnection
 	done chan struct{}
 
-	mu sync.Mutex
-	dc *webrtc.DataChannel
+	mu              sync.Mutex
+	dc              *webrtc.DataChannel
+	suppressTrickle bool // when true, OnICECandidate callback is suppressed (used during ICE restart)
 }
 
 // NewPeer creates a new RTCPeerConnection with the given ICE configuration.
@@ -100,6 +101,13 @@ func NewPeer(cfg PeerConfig) (*Peer, error) {
 		if c == nil {
 			// Gathering complete.
 			p.log.Debug("ICE gathering complete")
+			return
+		}
+		p.mu.Lock()
+		suppress := p.suppressTrickle
+		p.mu.Unlock()
+		if suppress {
+			p.log.Debug("ICE candidate gathered (suppressed, will be in SDP)", "candidate", c.String())
 			return
 		}
 		p.log.Debug("ICE candidate gathered", "candidate", c.String())
@@ -183,6 +191,54 @@ func (p *Peer) HandleOffer(sdp string) (string, error) {
 	return answer.SDP, nil
 }
 
+// HandleOfferFullICE is like HandleOffer but waits for ICE gathering to
+// complete before returning. The returned SDP contains all gathered candidates
+// as a= lines, avoiding trickle ICE. This is used for ICE restart offers
+// where trickle candidates would race with the SDP and get dropped due to
+// ufrag mismatch.
+func (p *Peer) HandleOfferFullICE(sdp string) (string, error) {
+	offer := webrtc.SessionDescription{
+		Type: webrtc.SDPTypeOffer,
+		SDP:  sdp,
+	}
+	if err := p.pc.SetRemoteDescription(offer); err != nil {
+		return "", fmt.Errorf("setting remote offer: %w", err)
+	}
+
+	// Suppress trickle ICE — candidates will be embedded in the SDP.
+	p.mu.Lock()
+	p.suppressTrickle = true
+	p.mu.Unlock()
+
+	gatherComplete := webrtc.GatheringCompletePromise(p.pc)
+
+	answer, err := p.pc.CreateAnswer(nil)
+	if err != nil {
+		p.mu.Lock()
+		p.suppressTrickle = false
+		p.mu.Unlock()
+		return "", fmt.Errorf("creating SDP answer: %w", err)
+	}
+
+	if err := p.pc.SetLocalDescription(answer); err != nil {
+		p.mu.Lock()
+		p.suppressTrickle = false
+		p.mu.Unlock()
+		return "", fmt.Errorf("setting local description: %w", err)
+	}
+
+	<-gatherComplete
+
+	p.mu.Lock()
+	p.suppressTrickle = false
+	p.mu.Unlock()
+
+	finalSDP := p.pc.LocalDescription().SDP
+
+	p.log.Debug("SDP answer created (full ICE gathering complete)")
+	return finalSDP, nil
+}
+
 // SetAnswer sets the remote SDP answer on the peer connection. Called by the
 // offerer after receiving the answer from the remote peer via signaling.
 func (p *Peer) SetAnswer(sdp string) error {
@@ -203,6 +259,12 @@ func (p *Peer) SetAnswer(sdp string) error {
 // is renegotiated. The caller should send the returned SDP to the remote peer,
 // then apply the answer via SetAnswer.
 //
+// Unlike the initial offer (which uses trickle ICE), the restart offer waits
+// for ICE gathering to complete before returning. This ensures all candidates
+// are embedded in the SDP, avoiding the race where trickle candidates arrive
+// at the remote peer before the restart offer and get dropped due to ufrag
+// mismatch.
+//
 // If the PeerConnection is already in the "have-local-offer" state (e.g. from
 // a previous ICE restart whose answer never arrived because signaling was down),
 // the pending offer is rolled back to "stable" before creating the new one.
@@ -218,17 +280,52 @@ func (p *Peer) RestartICE() (string, error) {
 		}
 	}
 
+	// Suppress trickle ICE during restart — candidates will be embedded
+	// in the SDP instead.
+	p.mu.Lock()
+	p.suppressTrickle = true
+	p.mu.Unlock()
+
+	// Must be called before SetLocalDescription to avoid a race where
+	// gathering completes between SLD and this call.
+	gatherComplete := webrtc.GatheringCompletePromise(p.pc)
+
 	offer, err := p.pc.CreateOffer(&webrtc.OfferOptions{ICERestart: true})
 	if err != nil {
+		p.mu.Lock()
+		p.suppressTrickle = false
+		p.mu.Unlock()
 		return "", fmt.Errorf("creating ICE restart offer: %w", err)
 	}
 
 	if err := p.pc.SetLocalDescription(offer); err != nil {
+		p.mu.Lock()
+		p.suppressTrickle = false
+		p.mu.Unlock()
 		return "", fmt.Errorf("setting local description for ICE restart: %w", err)
 	}
 
-	p.log.Info("ICE restart initiated")
-	return offer.SDP, nil
+	// Wait for all ICE candidates to be gathered.
+	<-gatherComplete
+
+	p.mu.Lock()
+	p.suppressTrickle = false
+	p.mu.Unlock()
+
+	// Return the final local description which includes all gathered
+	// candidates as a= lines in the SDP.
+	finalSDP := p.pc.LocalDescription().SDP
+
+	p.log.Info("ICE restart initiated (full ICE gathering complete)")
+	return finalSDP, nil
+}
+
+// HasRemoteDescription returns true if a remote SDP description has been set
+// on the underlying PeerConnection. This is used by the agent to decide
+// whether to buffer incoming ICE candidates (pion rejects AddICECandidate
+// calls before SetRemoteDescription).
+func (p *Peer) HasRemoteDescription() bool {
+	return p.pc.RemoteDescription() != nil
 }
 
 // AddICECandidate adds a remote ICE candidate received via the signaling channel.

@@ -2,6 +2,8 @@ package signaling
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -382,6 +384,101 @@ func TestClient_ConnectToUnreachableServer(t *testing.T) {
 	err := client.Connect(ctx)
 	if err == nil {
 		t.Fatal("expected error connecting to unreachable server, got nil")
+	}
+}
+
+func TestIsHTTP401(t *testing.T) {
+	t.Parallel()
+
+	t.Run("typed 401 error", func(t *testing.T) {
+		err := &httpStatusError{StatusCode: 401, Err: fmt.Errorf("dial failed")}
+		if !isHTTP401(err) {
+			t.Error("expected isHTTP401 to return true for 401 httpStatusError")
+		}
+	})
+
+	t.Run("typed 403 error", func(t *testing.T) {
+		err := &httpStatusError{StatusCode: 403, Err: fmt.Errorf("forbidden")}
+		if isHTTP401(err) {
+			t.Error("expected isHTTP401 to return false for 403 httpStatusError")
+		}
+	})
+
+	t.Run("wrapped 401 error", func(t *testing.T) {
+		inner := &httpStatusError{StatusCode: 401, Err: fmt.Errorf("dial failed")}
+		err := fmt.Errorf("connecting: %w", inner)
+		if !isHTTP401(err) {
+			t.Error("expected isHTTP401 to return true for wrapped 401 httpStatusError")
+		}
+	})
+
+	t.Run("nil error", func(t *testing.T) {
+		if isHTTP401(nil) {
+			t.Error("expected isHTTP401 to return false for nil error")
+		}
+	})
+
+	t.Run("non-http error", func(t *testing.T) {
+		err := fmt.Errorf("connection refused")
+		if isHTTP401(err) {
+			t.Error("expected isHTTP401 to return false for non-http error")
+		}
+	})
+}
+
+func TestClient_Reconnect_401_ExhaustsAuthRefreshes(t *testing.T) {
+	t.Parallel()
+
+	// Start an HTTP server that always returns 401.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	refreshCalls := 0
+	client := NewClient(ClientConfig{
+		ServerURL:   wsURL,
+		PeerID:      "peer-a",
+		PublicKey:   "key-a",
+		DialTimeout: 500 * time.Millisecond,
+		TokenProvider: func() string {
+			return "fake-token"
+		},
+		OnAuthFailure: func() error {
+			refreshCalls++
+			return nil // refresh "succeeds" but server will still return 401
+		},
+		Reconnect: ReconnectConfig{
+			Enabled:      true,
+			InitialDelay: 10 * time.Millisecond,
+			MaxDelay:     50 * time.Millisecond,
+			MaxAttempts:  0, // unlimited — the auth refresh limit should kick in
+		},
+	})
+
+	// Initial connect will fail with 401.
+	err := client.Connect(ctx)
+	if err == nil {
+		t.Fatal("expected Connect to fail with 401, got nil")
+	}
+	if !isHTTP401(err) {
+		t.Fatalf("expected HTTP 401 error, got: %v", err)
+	}
+
+	// Now test the reconnect path directly. Since Connect failed, we need
+	// to test reconnect() directly.
+	result := client.reconnect(ctx)
+	if result {
+		t.Fatal("expected reconnect to return false (auth refreshes exhausted)")
+	}
+
+	// Should have called refresh exactly maxAuthRefreshes times before giving up.
+	if refreshCalls != maxAuthRefreshes {
+		t.Errorf("expected %d refresh calls, got %d", maxAuthRefreshes, refreshCalls)
 	}
 }
 

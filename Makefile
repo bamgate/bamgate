@@ -31,7 +31,7 @@ AAR_OUTPUT    = $(ANDROID_DIR)/app/libs/bamgate.aar
 APK_OUTPUT    = $(ANDROID_DIR)/app/build/outputs/apk/debug/app-debug.apk
 ASSETS_DIR    = internal/deploy/assets
 
-.PHONY: build build-hub build-all install test worker worker-assets worker-dev worker-deploy \
+.PHONY: build build-hub build-all install test e2e worker worker-assets worker-dev worker-deploy \
         aar android install-android lint fmt clean help
 
 # Default target
@@ -50,6 +50,9 @@ build-all: build build-hub worker aar
 
 test:
 	go test ./...
+
+e2e:
+	go test -tags e2e -v -timeout 120s ./test/e2e/
 
 # --- Worker (TinyGo -> Wasm) ---
 
@@ -107,6 +110,7 @@ help:
 	@echo "  build-hub        Build the bamgate-hub binary"
 	@echo "  build-all        Build everything (cli + hub + worker + aar)"
 	@echo "  test             Run all Go tests"
+	@echo "  e2e              Run Docker e2e tests (3-peer mesh, requires Docker)"
 	@echo ""
 	@echo "  worker           Build Cloudflare Worker (TinyGo -> Wasm)"
 	@echo "  worker-assets    Copy worker artifacts to internal/deploy/assets/"

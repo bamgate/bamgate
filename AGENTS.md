@@ -251,6 +251,151 @@ worker/                # Cloudflare Worker + Durable Object (Go -> Wasm)
 - **TURN relay only sees opaque encrypted blobs**. Never log or inspect packet contents.
 - **Auth tokens and private keys are secrets**. Never commit them or log them in plaintext.
 
+## Testing
+
+### Quick Reference
+
+```bash
+# Run all tests
+go test ./...
+
+# Run agent integration tests (the most comprehensive suite)
+go test ./internal/agent/ -run TestAgent -v
+
+# Run a single test
+go test ./internal/agent/ -run TestAgent_TwoPeers_FullConnection -v
+
+# Run tests multiple times to check for flakiness
+go test ./internal/agent/ -run TestAgent -count=5
+
+# Run with race detector (slower but catches data races)
+go test -race ./...
+
+# Run Docker e2e tests (3-peer mesh with real TUN + WireGuard)
+make e2e
+# or: go test -tags e2e -v -timeout 120s ./test/e2e/
+```
+
+### What to Run After Changes
+
+| Changed | Run |
+|---------|-----|
+| `internal/agent/` | `go test ./internal/agent/ -run TestAgent -v` |
+| `internal/signaling/` | `go test ./internal/signaling/ -v` |
+| `internal/webrtc/` | `go test ./internal/webrtc/ -v` |
+| `internal/bridge/` | `go test ./internal/bridge/ -v` |
+| `internal/tunnel/` | `go test ./internal/tunnel/ -v` |
+| `internal/config/` | `go test ./internal/config/ -v` |
+| `pkg/protocol/` | `go test ./pkg/protocol/ -v` |
+| Any change | `go test ./...` (full suite, ~2s) |
+| Before committing | `go test ./... && golangci-lint run ./...` |
+| Before releasing | `make e2e` (Docker e2e, ~90s) |
+
+### Agent Integration Tests
+
+The agent package has the most comprehensive test suite. Tests run without root
+privileges using **fake TUN/WireGuard** + **real signaling** (in-process Hub) +
+**real WebRTC** (local ICE). No network access required.
+
+**Architecture:**
+- `internal/agent/deps.go` — Defines interfaces (`SignalingClient`, `WireGuardDevice`,
+  `NetworkManager`, `NATSetup`, `AuthRefresher`, `ConfigPersister`, `TUNProvider`,
+  `WireGuardProvider`) and a `Deps` struct with `DefaultDeps()` factory.
+- `internal/agent/fake_test.go` — Test doubles for all interfaces. The fakes record
+  calls (e.g., `fakeWireGuardDevice.hasPeer()`, `fakeNetworkManager.routes`) so tests
+  can verify behavior without kernel access.
+- `internal/agent/agent_integration_test.go` — Integration tests.
+
+**Test inventory:**
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestAgent_TwoPeers_FullConnection` | Two agents discover each other, SDP exchange, data channel, WG peer config |
+| `TestAgent_PeerLeft_Cleanup` | Peer departure triggers WG peer removal and state cleanup |
+| `TestAgent_ThreePeers` | Three agents all connect (tests offer/answer interleaving) |
+| `TestAgent_TokenRefresh` | OAuth token refresh on startup, config persistence |
+| `TestAgent_RoutesAccepted` | Route advertisement → kernel route addition |
+| `TestAgent_GlareResolution` | Lexicographic offer ordering prevents duplicate connections |
+| `TestAgent_SelfSkip` | Agent ignores itself in peers list |
+| `TestAgent_ICEDisconnect_GracePeriod` | Grace timer starts on disconnect, cancelled on reconnect |
+| `TestAgent_ICEFailed_RestartsICE` | ICE failure triggers restart → successful reconnection |
+| `TestAgent_ICERestart_MaxAttempts` | Peer removed after exhausting max ICE restart attempts |
+| `TestAgent_ICEDisconnect_GraceExpires` | Grace timer expiry triggers ICE restart |
+| `TestAgent_NotifyNetworkChange` | Network change resets ICE state, triggers restarts, debounce |
+
+**Writing new agent tests:**
+1. Use `newTestDeps()` to get a `Deps` with all fakes pre-wired.
+2. Override `deps.Signaling` with a real `signaling.NewClient` pointed at
+   `startTestHub(t)`.
+3. Use `startConnectedPair(t)` helper for tests that need two already-connected agents.
+4. Use `waitFor(t, timeout, desc, fn)` for async assertions.
+5. Use `isShutdownError(err)` when checking agent exit errors — context cancellation,
+   WebSocket close, etc. are all normal during test teardown.
+
+### Docker E2E Tests
+
+The `test/e2e/` directory contains end-to-end tests that spin up real bamgate
+peers in Docker containers with real TUN devices, real WireGuard encryption,
+and real WebRTC data channels. Actual IP packets (ICMP ping) flow through the
+encrypted tunnel.
+
+**Prerequisites:**
+- Docker with the compose plugin (`docker compose version`)
+- `/dev/net/tun` available on the host
+- ~90 seconds per run (image build is cached after the first run)
+
+**Running:**
+```bash
+make e2e
+# or: go test -tags e2e -v -timeout 120s ./test/e2e/
+```
+
+**Topology:** 4 Docker containers on a shared bridge network:
+```
+hub (bamgate-hub :8080)     — signaling relay, no special caps
+  |
+  +— alpha  (bamgate)       — CAP_NET_ADMIN + /dev/net/tun, 10.0.0.1/24
+  +— bravo  (bamgate)       — CAP_NET_ADMIN + /dev/net/tun, 10.0.0.2/24
+  +— charlie (bamgate)      — CAP_NET_ADMIN + /dev/net/tun, 10.0.0.3/24
+```
+
+**Test inventory:**
+
+| Test | What it verifies |
+|------|-----------------|
+| `TestE2E_ThreePeerMesh` | 3 peers establish full mesh, ping all 6 directions through tunnel |
+| `TestE2E_PeerDeparture` | Peer stops → remaining peers still connected → peer rejoins → full mesh restored |
+
+**What's different from agent integration tests:**
+- Integration tests use fake TUN/WireGuard + real WebRTC + real signaling.
+  They verify agent logic (peer lifecycle, ICE restart, config) but no real
+  packets flow.
+- E2E tests use real everything: TUN, WireGuard encryption, bridge, WebRTC,
+  signaling. Actual IP packets traverse the full tunnel stack.
+
+**Files:**
+- `test/e2e/Dockerfile` — Multi-stage build (Go builder → Debian slim runtime)
+- `test/e2e/docker-compose.yml` — Hub + 3 peer containers
+- `test/e2e/e2e_test.go` — Go test driver (build tag `e2e`)
+
+**SELinux note:** Volume mounts use `:z` label for SELinux compatibility on
+Fedora/RHEL. If you see "permission denied" on config files, ensure the `:z`
+label is present in the compose file.
+
+### Known Bugs Found by Tests
+
+These were discovered during test development and documented for future fixing:
+
+1. **`worker/turn.go:129`** — TURN relay address overflow at >255 allocations
+   (`byte(nextRelayHost)` wraps around).
+2. **`agent.go` `tokenMu` race** — `a.cfg.Network.RefreshToken` mutated without
+   holding `tokenMu` in some paths.
+3. **`client.go:409-420`** — Infinite retry possible: 401 → refresh succeeds but
+   server still returns 401.
+4. **`agent.go:768`** — Peers without an address get `0.0.0.0/0` routing (security issue).
+5. **`jwtRefreshLoop`** — `time.Sleep(30s)` ignores context cancellation.
+6. **`client.go:345`** — Fragile 401 detection via string matching on error message.
+
 ## Signaling Protocol
 
 JSON over WebSocket with a `"type"` discriminator field. Message types:

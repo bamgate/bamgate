@@ -22,7 +22,6 @@ import (
 	"github.com/pion/webrtc/v4"
 	"golang.zx2c4.com/wireguard/tun"
 
-	"github.com/kuuji/bamgate/internal/auth"
 	"github.com/kuuji/bamgate/internal/bridge"
 	"github.com/kuuji/bamgate/internal/config"
 	"github.com/kuuji/bamgate/internal/control"
@@ -69,6 +68,7 @@ type options struct {
 	routeUpdateCallback RouteUpdateFunc // optional callback when new peer routes are discovered
 	tokenUpdateCallback TokenUpdateFunc // optional callback when refresh token is rotated
 	configPath          string          // path to config file for persisting rotated refresh tokens
+	deps                *Deps           // if set, overrides the default production dependencies
 }
 
 // WithTunFD configures the agent to use an existing TUN file descriptor
@@ -110,22 +110,30 @@ func WithConfigPath(path string) Option {
 	return func(o *options) { o.configPath = path }
 }
 
+// WithDeps overrides the default production dependencies with custom
+// implementations. This is primarily used in tests to inject fakes for
+// components that require root privileges or network access.
+func WithDeps(d Deps) Option {
+	return func(o *options) { o.deps = &d }
+}
+
 // Agent orchestrates the bamgate VPN tunnel. It connects to the signaling
 // server, establishes WebRTC connections with peers, and bridges WireGuard
 // traffic over data channels.
 type Agent struct {
 	cfg  *config.Config
 	opts options
+	deps Deps
 	log  *slog.Logger
 
 	bind      *bridge.Bind
-	wgDevice  *tunnel.Device
+	wgDevice  WireGuardDevice
 	tunName   string // kernel interface name (e.g. "bamgate0")
-	sigClient *signaling.Client
+	sigClient SignalingClient
 	ctrlSrv   *control.Server
 
 	// Forwarding and NAT state for cleanup on shutdown.
-	natManager      *tunnel.NATManager
+	natManager      NATSetup
 	forwardingState []forwardingSave  // interfaces whose forwarding state was changed
 	masqueradeRules []masqueradeEntry // masquerade rules for re-application by watchdog
 
@@ -195,6 +203,12 @@ type peerState struct {
 
 	connectedAt time.Time // when the data channel opened
 
+	// pendingCandidates buffers ICE candidates that arrive before the
+	// remote SDP description is set (e.g. trickle candidates that arrive
+	// before the SDP offer/answer). They are flushed after
+	// SetRemoteDescription succeeds.
+	pendingCandidates []string
+
 	// ICE restart tracking.
 	iceRestarts    int         // number of restarts attempted
 	disconnectTime time.Time   // when ICE entered disconnected state
@@ -213,9 +227,16 @@ func New(cfg *config.Config, logger *slog.Logger, opts ...Option) *Agent {
 	for _, opt := range opts {
 		opt(&o)
 	}
+
+	deps := DefaultDeps()
+	if o.deps != nil {
+		deps = *o.deps
+	}
+
 	return &Agent{
 		cfg:            cfg,
 		opts:           o,
+		deps:           deps,
 		log:            logger.With("component", "agent"),
 		peers:          make(map[string]*peerState),
 		notifiedRoutes: make(map[string]bool),
@@ -233,38 +254,17 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.bind = bridge.NewBind(a.log)
 
 	// 2. Create or adopt TUN device.
-	var (
-		tunDev tun.Device
-		err    error
-	)
-	if a.opts.tunFD > 0 {
-		// Android: use the TUN FD provided by VpnService.
-		tunDev, err = tunnel.CreateTUNFromFD(a.opts.tunFD)
-		if err != nil {
-			return fmt.Errorf("creating TUN device from fd %d: %w", a.opts.tunFD, err)
-		}
-		a.tunName = "tun-android"
-		a.log.Info("TUN device adopted from fd", "fd", a.opts.tunFD)
-	} else {
-		tunDev, err = tunnel.CreateTUN(tunnel.DefaultTUNName, tunnel.DefaultMTU)
-		if err != nil {
-			return fmt.Errorf("creating TUN device: %w", err)
-		}
-		// Get the actual name (may differ if OS renames it).
-		actualName, err := tunDev.Name()
-		if err != nil {
-			_ = tunDev.Close()
-			return fmt.Errorf("getting TUN device name: %w", err)
-		}
-		a.tunName = actualName
-		a.log.Info("TUN device created", "name", actualName)
+	var err error
+	tunDev, err := a.createTUNDevice()
+	if err != nil {
+		return err
 	}
 
 	// 3. Create WireGuard device with our custom Bind.
 	wgCfg := tunnel.DeviceConfig{
 		PrivateKey: a.cfg.Device.PrivateKey,
 	}
-	a.wgDevice, err = tunnel.NewDevice(wgCfg, tunDev, a.bind, a.log)
+	a.wgDevice, err = a.deps.WireGuard.NewDevice(wgCfg, tunDev, a.bind, a.log)
 	if err != nil {
 		_ = tunDev.Close()
 		return fmt.Errorf("creating WireGuard device: %w", err)
@@ -330,7 +330,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			return a.refreshJWT(ctx)
 		}
 	}
-	a.sigClient = signaling.NewClient(sigCfg)
+	a.sigClient = a.deps.Signaling(sigCfg)
 
 	if err := a.sigClient.Connect(ctx); err != nil {
 		return fmt.Errorf("connecting to signaling server: %w", err)
@@ -494,6 +494,13 @@ func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) err
 	var peer *rtcpkg.Peer
 	if hasConnection {
 		peer = ps.rtcPeer
+		// Clear stale buffered candidates — an ICE restart uses new ufrags,
+		// so any candidates buffered from the previous session are invalid.
+		a.mu.Lock()
+		if ps, ok := a.peers[msg.From]; ok {
+			ps.pendingCandidates = nil
+		}
+		a.mu.Unlock()
 		a.log.Debug("reusing existing PeerConnection for offer",
 			"from", msg.From, "ice_state", peer.ConnectionState().String())
 	} else {
@@ -504,10 +511,27 @@ func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) err
 		}
 	}
 
-	answerSDP, err := peer.HandleOffer(msg.SDP)
-	if err != nil {
-		return fmt.Errorf("handling offer: %w", err)
+	var answerSDP string
+	if hasConnection {
+		// ICE restart / renegotiation: use full ICE gathering (no trickle)
+		// to avoid the race where trickle candidates arrive at the remote
+		// peer before the SDP and get dropped due to ufrag mismatch.
+		var err error
+		answerSDP, err = peer.HandleOfferFullICE(msg.SDP)
+		if err != nil {
+			return fmt.Errorf("handling restart offer: %w", err)
+		}
+	} else {
+		var err error
+		answerSDP, err = peer.HandleOffer(msg.SDP)
+		if err != nil {
+			return fmt.Errorf("handling offer: %w", err)
+		}
 	}
+
+	// HandleOffer/HandleOfferFullICE call SetRemoteDescription — flush any
+	// ICE candidates that were buffered before this point.
+	a.flushPendingCandidates(msg.From)
 
 	// We accepted their offer, so clear our pending restart flag — their
 	// offer supersedes ours.
@@ -546,21 +570,88 @@ func (a *Agent) handleAnswer(msg *protocol.AnswerMessage) error {
 		return fmt.Errorf("received answer from unknown peer: %s", msg.From)
 	}
 
-	return ps.rtcPeer.SetAnswer(msg.SDP)
+	if ps.rtcPeer == nil {
+		return fmt.Errorf("received answer before WebRTC connection created for peer: %s", msg.From)
+	}
+
+	if err := ps.rtcPeer.SetAnswer(msg.SDP); err != nil {
+		return err
+	}
+
+	// SetAnswer calls SetRemoteDescription — flush any ICE candidates
+	// that were buffered before this point.
+	a.flushPendingCandidates(msg.From)
+	return nil
 }
 
 // handleICECandidate processes an incoming ICE candidate from a remote peer.
+//
+// ICE candidates can arrive before the PeerConnection is created or before
+// SetRemoteDescription is called (trickle ICE race). In both cases the
+// candidate is buffered in peerState.pendingCandidates and flushed once the
+// remote description is set (see flushPendingCandidates).
 func (a *Agent) handleICECandidate(msg *protocol.ICECandidateMessage) error {
 	a.mu.Lock()
 	ps, ok := a.peers[msg.From]
-	a.mu.Unlock()
 
+	// If we don't know this peer at all yet, create a skeleton peerState
+	// so candidates aren't lost. The peerState will be fully populated
+	// when the peers list or offer arrives.
 	if !ok {
-		a.log.Debug("ICE candidate from unknown peer, ignoring", "from", msg.From)
+		ps = &peerState{
+			pendingCandidates: []string{msg.Candidate},
+		}
+		a.peers[msg.From] = ps
+		a.mu.Unlock()
+		a.log.Debug("buffered ICE candidate for unknown peer", "from", msg.From)
 		return nil
 	}
 
-	return ps.rtcPeer.AddICECandidate(msg.Candidate)
+	// Buffer if PeerConnection doesn't exist yet.
+	if ps.rtcPeer == nil {
+		ps.pendingCandidates = append(ps.pendingCandidates, msg.Candidate)
+		a.mu.Unlock()
+		a.log.Debug("buffered ICE candidate (no PeerConnection yet)", "from", msg.From)
+		return nil
+	}
+
+	// Buffer if the remote description hasn't been set yet — pion rejects
+	// AddICECandidate before SetRemoteDescription.
+	if !ps.rtcPeer.HasRemoteDescription() {
+		ps.pendingCandidates = append(ps.pendingCandidates, msg.Candidate)
+		a.mu.Unlock()
+		a.log.Debug("buffered ICE candidate (no remote description yet)", "from", msg.From)
+		return nil
+	}
+
+	a.mu.Unlock()
+	if err := ps.rtcPeer.AddICECandidate(msg.Candidate); err != nil {
+		a.log.Warn("failed to add ICE candidate", "from", msg.From, "error", err)
+		return err
+	}
+	return nil
+}
+
+// flushPendingCandidates drains any ICE candidates that were buffered before
+// SetRemoteDescription was called and applies them to the PeerConnection.
+// Must be called after SetRemoteDescription succeeds.
+func (a *Agent) flushPendingCandidates(peerID string) {
+	a.mu.Lock()
+	ps, ok := a.peers[peerID]
+	if !ok || ps.rtcPeer == nil || len(ps.pendingCandidates) == 0 {
+		a.mu.Unlock()
+		return
+	}
+	candidates := ps.pendingCandidates
+	ps.pendingCandidates = nil
+	a.mu.Unlock()
+
+	a.log.Info("flushing buffered ICE candidates", "peer_id", peerID, "count", len(candidates))
+	for _, c := range candidates {
+		if err := ps.rtcPeer.AddICECandidate(c); err != nil {
+			a.log.Warn("adding buffered ICE candidate", "peer_id", peerID, "error", err)
+		}
+	}
 }
 
 // handlePeerLeft tears down the WebRTC connection and removes the WireGuard
@@ -584,19 +675,27 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, addre
 	}
 
 	a.mu.Lock()
-	// Check if we already have an established connection to this peer.
+	// Check if we already have an active or in-progress connection to this peer.
 	if ps, exists := a.peers[peerID]; exists && ps.rtcPeer != nil {
 		state := ps.rtcPeer.ConnectionState()
-		if state == webrtc.ICEConnectionStateConnected || state == webrtc.ICEConnectionStateCompleted {
+		switch state {
+		case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
 			a.mu.Unlock()
 			a.log.Debug("already connected to peer, skipping", "peer_id", peerID)
 			return nil
+		case webrtc.ICEConnectionStateNew, webrtc.ICEConnectionStateChecking:
+			// An offer is already in flight or ICE is still gathering/checking.
+			// Don't replace it — wait for it to either succeed or fail.
+			a.mu.Unlock()
+			a.log.Debug("connection attempt already in progress, skipping",
+				"peer_id", peerID, "ice_state", state.String())
+			return nil
+		default:
+			// Failed/disconnected/closed — tear down and reconnect.
+			a.mu.Unlock()
+			a.log.Info("replacing stale connection", "peer_id", peerID, "ice_state", state.String())
+			a.removePeer(peerID)
 		}
-		// Existing connection is not established (e.g. still checking for a
-		// stale peer). Tear it down and reconnect with the real peer.
-		a.mu.Unlock()
-		a.log.Info("replacing stale connection", "peer_id", peerID, "ice_state", state.String())
-		a.removePeer(peerID)
 	} else {
 		a.mu.Unlock()
 	}
@@ -698,6 +797,7 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 		Logger:   a.log,
 
 		OnICECandidate: func(candidate string) {
+			a.log.Debug("sending ICE candidate to peer", "to", peerID, "candidate", candidate[:min(len(candidate), 60)])
 			if err := a.sigClient.Send(ctx, &protocol.ICECandidateMessage{
 				From:      a.cfg.Device.Name,
 				To:        peerID,
@@ -719,8 +819,17 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 		return nil, err
 	}
 
+	// Store the new peer, closing any orphaned PeerConnection first.
+	// We must close outside the lock because Close() triggers ICE state
+	// change callbacks that also acquire a.mu.
+	var oldPeer *rtcpkg.Peer
 	a.mu.Lock()
 	if existing, ok := a.peers[peerID]; ok {
+		if existing.rtcPeer != nil {
+			oldPeer = existing.rtcPeer
+			a.log.Warn("closing orphaned PeerConnection before replacement",
+				"peer_id", peerID)
+		}
 		// Preserve fields (address, publicKey) that may have been
 		// pre-populated from the peers list.
 		existing.rtcPeer = peer
@@ -728,6 +837,13 @@ func (a *Agent) createRTCPeer(ctx context.Context, peerID string) (*rtcpkg.Peer,
 		a.peers[peerID] = &peerState{rtcPeer: peer}
 	}
 	a.mu.Unlock()
+
+	if oldPeer != nil {
+		a.bind.RemoveDataChannel(peerID)
+		if err := oldPeer.Close(); err != nil {
+			a.log.Warn("closing orphaned PeerConnection", "peer_id", peerID, "error", err)
+		}
+	}
 
 	return peer, nil
 }
@@ -764,23 +880,23 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 	acceptedRoutes := a.resolveAcceptedRoutes(peerID, ps)
 
 	// Determine the peer's WireGuard allowed IPs from their tunnel address
-	// and the accepted routes.
-	allowedIPs := []string{"0.0.0.0/0", "::/0"} // fallback if no address
-	if ps.address != "" {
-		ip, _, err := net.ParseCIDR(ps.address)
-		if err != nil {
-			a.log.Warn("invalid peer address, using default AllowedIPs",
-				"peer_id", peerID, "address", ps.address, "error", err)
-		} else {
-			allowedIPs = append([]string{ip.String() + "/32"}, acceptedRoutes...)
-
-			a.log.Info("using peer-specific AllowedIPs",
-				"peer_id", peerID, "allowed_ips", allowedIPs)
-		}
-	} else {
-		a.log.Warn("peer has no tunnel address, using default AllowedIPs",
+	// and the accepted routes. Peers without a valid address are rejected
+	// to prevent wildcard routing (0.0.0.0/0) which would make them a
+	// default gateway — a security risk.
+	if ps.address == "" {
+		a.log.Error("peer has no tunnel address, refusing to add WireGuard peer",
 			"peer_id", peerID)
+		return
 	}
+	ip, _, err := net.ParseCIDR(ps.address)
+	if err != nil {
+		a.log.Error("invalid peer address, refusing to add WireGuard peer",
+			"peer_id", peerID, "address", ps.address, "error", err)
+		return
+	}
+	allowedIPs := append([]string{ip.String() + "/32"}, acceptedRoutes...)
+	a.log.Info("using peer-specific AllowedIPs",
+		"peer_id", peerID, "allowed_ips", allowedIPs)
 
 	peerCfg := tunnel.PeerConfig{
 		PublicKey:           ps.publicKey,
@@ -796,7 +912,7 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 	// Add kernel routes for accepted subnets so the kernel directs matching
 	// traffic into the TUN interface.
 	for _, route := range acceptedRoutes {
-		if err := tunnel.AddRoute(a.tunName, route); err != nil {
+		if err := a.deps.Network.AddRoute(a.tunName, route); err != nil {
 			a.log.Warn("adding route for peer", "peer_id", peerID, "route", route, "error", err)
 		} else {
 			a.log.Info("added route", "peer_id", peerID, "route", route, "dev", a.tunName)
@@ -806,7 +922,7 @@ func (a *Agent) onDataChannelOpen(peerID string, dc *webrtc.DataChannel) {
 	// Configure DNS for accepted DNS servers/search domains from this peer.
 	acceptedDNS, acceptedSearch := a.resolveAcceptedDNS(peerID)
 	if len(acceptedDNS) > 0 || len(acceptedSearch) > 0 {
-		if err := tunnel.SetDNS(a.tunName, acceptedDNS, acceptedSearch); err != nil {
+		if err := a.deps.Network.SetDNS(a.tunName, acceptedDNS, acceptedSearch); err != nil {
 			a.log.Warn("setting DNS for peer", "peer_id", peerID, "error", err)
 		} else {
 			a.log.Info("configured DNS",
@@ -906,7 +1022,7 @@ func (a *Agent) removePeer(peerID string) {
 	// Remove kernel routes that were accepted from this peer.
 	acceptedRoutes := a.resolveAcceptedRoutes(peerID, ps)
 	for _, route := range acceptedRoutes {
-		if err := tunnel.RemoveRoute(a.tunName, route); err != nil {
+		if err := a.deps.Network.RemoveRoute(a.tunName, route); err != nil {
 			a.log.Warn("removing route for peer", "peer_id", peerID, "route", route, "error", err)
 		} else {
 			a.log.Info("removed route", "peer_id", peerID, "route", route, "dev", a.tunName)
@@ -916,24 +1032,28 @@ func (a *Agent) removePeer(peerID string) {
 	// Remove DNS configuration for this peer.
 	acceptedDNS, acceptedSearch := a.resolveAcceptedDNS(peerID)
 	if len(acceptedDNS) > 0 || len(acceptedSearch) > 0 {
-		if err := tunnel.RevertDNS(a.tunName); err != nil {
+		if err := a.deps.Network.RevertDNS(a.tunName); err != nil {
 			a.log.Warn("reverting DNS for peer", "peer_id", peerID, "error", err)
 		} else {
 			a.log.Info("reverted DNS", "peer_id", peerID, "dev", a.tunName)
 		}
 	}
 
-	// Remove the data channel from the bridge.
-	a.bind.RemoveDataChannel(peerID)
+	// Cleanup order matters: remove the WireGuard peer first so it stops
+	// trying to send packets, then remove the bridge data channel, then
+	// close the PeerConnection last.
 
-	// Remove the WireGuard peer if we have their public key.
+	// 1. Remove the WireGuard peer (stops outbound packet attempts).
 	if !ps.publicKey.IsZero() {
 		if err := a.wgDevice.RemovePeer(ps.publicKey); err != nil {
 			a.log.Error("removing WireGuard peer", "peer_id", peerID, "error", err)
 		}
 	}
 
-	// Close the WebRTC peer connection.
+	// 2. Remove the data channel from the bridge.
+	a.bind.RemoveDataChannel(peerID)
+
+	// 3. Close the WebRTC peer connection.
 	if ps.rtcPeer != nil {
 		if err := ps.rtcPeer.Close(); err != nil {
 			a.log.Error("closing WebRTC peer", "peer_id", peerID, "error", err)
@@ -1132,7 +1252,7 @@ func (a *Agent) ConfigurePeer(req control.ConfigureRequest) error {
 
 	// Persist to disk.
 	if a.configPath != "" {
-		if err := config.SaveConfig(a.configPath, a.cfg); err != nil {
+		if err := a.deps.Config.SaveConfig(a.configPath, a.cfg); err != nil {
 			return fmt.Errorf("saving config: %w", err)
 		}
 	}
@@ -1208,6 +1328,9 @@ func (a *Agent) attemptICERestart(ctx context.Context, peerID string) {
 	ps.iceRestarts++
 	attempt := ps.iceRestarts
 	ps.restartTimer = nil
+	// Clear any buffered ICE candidates from the previous session —
+	// they have stale ufrags and will be rejected after the restart.
+	ps.pendingCandidates = nil
 
 	if attempt > maxICERestarts {
 		a.mu.Unlock()
@@ -1310,6 +1433,10 @@ func (a *Agent) CurrentJWT() string {
 // refreshJWT exchanges the current refresh token for a new JWT access token
 // and a rotated refresh token. The new refresh token is persisted to the
 // config file immediately to prevent token loss on crash.
+//
+// This method can be called concurrently from jwtRefreshLoop and the
+// signaling client's OnAuthFailure callback, so all access to jwtToken
+// and RefreshToken is protected by tokenMu.
 func (a *Agent) refreshJWT(ctx context.Context) error {
 	// Derive HTTPS base URL from the WSS signaling URL.
 	serverURL := a.cfg.Network.ServerURL
@@ -1320,22 +1447,25 @@ func (a *Agent) refreshJWT(ctx context.Context) error {
 		serverURL = serverURL[:idx]
 	}
 
-	resp, err := auth.Refresh(ctx, serverURL, a.cfg.Network.DeviceID, a.cfg.Network.RefreshToken)
+	// Read the current refresh token under lock.
+	a.tokenMu.RLock()
+	refreshToken := a.cfg.Network.RefreshToken
+	a.tokenMu.RUnlock()
+
+	resp, err := a.deps.Auth.Refresh(ctx, serverURL, a.cfg.Network.DeviceID, refreshToken)
 	if err != nil {
 		return fmt.Errorf("refreshing JWT: %w", err)
 	}
 
-	// Update in-memory state.
+	// Update both tokens under a single lock.
 	a.tokenMu.Lock()
 	a.jwtToken = resp.AccessToken
-	a.tokenMu.Unlock()
-
-	// Rotate the refresh token in config.
 	a.cfg.Network.RefreshToken = resp.RefreshToken
+	a.tokenMu.Unlock()
 
 	// Persist the rotated token immediately so we don't lose it on crash.
 	if a.configPath != "" {
-		if err := config.SaveSecrets(a.configPath, a.cfg); err != nil {
+		if err := a.deps.Config.SaveSecrets(a.configPath, a.cfg); err != nil {
 			a.log.Error("persisting rotated refresh token", "error", err)
 			// Non-fatal — the agent can continue with the in-memory token.
 			// The token will be persisted on the next successful refresh.
@@ -1345,7 +1475,7 @@ func (a *Agent) refreshJWT(ctx context.Context) error {
 	// On platforms without direct filesystem access (Android), notify via
 	// callback so the host app can persist the updated config.
 	if a.opts.tokenUpdateCallback != nil {
-		toml, err := config.MarshalTOML(a.cfg)
+		toml, err := a.deps.Config.MarshalTOML(a.cfg)
 		if err != nil {
 			a.log.Error("marshaling config for token update callback", "error", err)
 		} else {
@@ -1371,14 +1501,46 @@ func (a *Agent) jwtRefreshLoop(ctx context.Context) {
 		case <-ticker.C:
 			if err := a.refreshJWT(ctx); err != nil {
 				a.log.Error("background JWT refresh failed", "error", err)
-				// Try again sooner on failure.
-				time.Sleep(30 * time.Second)
+				// Try again sooner on failure, but respect cancellation.
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(30 * time.Second):
+				}
 				if err := a.refreshJWT(ctx); err != nil {
 					a.log.Error("JWT refresh retry failed", "error", err)
 				}
 			}
 		}
 	}
+}
+
+// createTUNDevice creates or adopts a TUN device based on the agent options.
+func (a *Agent) createTUNDevice() (tun.Device, error) {
+	if a.opts.tunFD > 0 {
+		// Android: use the TUN FD provided by VpnService.
+		tunDev, err := a.deps.TUN.CreateTUNFromFD(a.opts.tunFD)
+		if err != nil {
+			return nil, fmt.Errorf("creating TUN device from fd %d: %w", a.opts.tunFD, err)
+		}
+		a.tunName = "tun-android"
+		a.log.Info("TUN device adopted from fd", "fd", a.opts.tunFD)
+		return tunDev, nil
+	}
+
+	tunDev, err := a.deps.TUN.CreateTUN(tunnel.DefaultTUNName, tunnel.DefaultMTU)
+	if err != nil {
+		return nil, fmt.Errorf("creating TUN device: %w", err)
+	}
+	// Get the actual name (may differ if OS renames it).
+	actualName, err := tunDev.Name()
+	if err != nil {
+		_ = tunDev.Close()
+		return nil, fmt.Errorf("getting TUN device name: %w", err)
+	}
+	a.tunName = actualName
+	a.log.Info("TUN device created", "name", actualName)
+	return tunDev, nil
 }
 
 // configureTUN configures the TUN interface with an IP address and brings it up.
@@ -1398,11 +1560,11 @@ func (a *Agent) configureTUN(ifName string) error {
 		return fmt.Errorf("invalid device address %q: %w", addr, err)
 	}
 
-	if err := tunnel.AddAddress(ifName, addr); err != nil {
+	if err := a.deps.Network.AddAddress(ifName, addr); err != nil {
 		return fmt.Errorf("adding address to %s: %w", ifName, err)
 	}
 
-	if err := tunnel.SetLinkUp(ifName); err != nil {
+	if err := a.deps.Network.SetLinkUp(ifName); err != nil {
 		return fmt.Errorf("bringing up %s: %w", ifName, err)
 	}
 
@@ -1431,7 +1593,11 @@ func (a *Agent) setupForwardingAndNAT(tunIface string) error {
 	}
 
 	// Set up NAT manager.
-	a.natManager = tunnel.NewNATManager(a.log)
+	if a.deps.NAT != nil {
+		a.natManager = a.deps.NAT
+	} else {
+		a.natManager = tunnel.NewNATManager(a.log)
+	}
 
 	// For each advertised route, find the outgoing interface and set up
 	// forwarding + masquerade.
@@ -1441,7 +1607,7 @@ func (a *Agent) setupForwardingAndNAT(tunIface string) error {
 			continue
 		}
 
-		outIface, err := tunnel.FindInterfaceForSubnet(route)
+		outIface, err := a.deps.Network.FindInterfaceForSubnet(route)
 		if err != nil {
 			a.log.Warn("cannot find outgoing interface for route (masquerade not set up)",
 				"route", route, "error", err)
@@ -1486,7 +1652,7 @@ func (a *Agent) enableForwarding(ifName string) error {
 	}
 
 	// Read current state before changing it.
-	wasEnabled, err := tunnel.GetForwarding(ifName)
+	wasEnabled, err := a.deps.Network.GetForwarding(ifName)
 	if err != nil {
 		return fmt.Errorf("reading forwarding state for %s: %w", ifName, err)
 	}
@@ -1501,7 +1667,7 @@ func (a *Agent) enableForwarding(ifName string) error {
 		return nil
 	}
 
-	if err := tunnel.SetForwarding(ifName, true); err != nil {
+	if err := a.deps.Network.SetForwarding(ifName, true); err != nil {
 		return fmt.Errorf("enabling forwarding on %s: %w", ifName, err)
 	}
 
@@ -1516,7 +1682,7 @@ func (a *Agent) cleanupForwardingAndNAT() {
 		if s.previousEnabled {
 			continue // was already enabled, don't disable
 		}
-		if err := tunnel.SetForwarding(s.ifName, false); err != nil {
+		if err := a.deps.Network.SetForwarding(s.ifName, false); err != nil {
 			a.log.Warn("restoring forwarding state",
 				"interface", s.ifName, "error", err)
 		} else {
@@ -1567,7 +1733,7 @@ func (a *Agent) checkAndRepairForwarding() {
 		if s.previousEnabled {
 			continue // Was already enabled before we started; not our responsibility.
 		}
-		enabled, err := tunnel.GetForwarding(s.ifName)
+		enabled, err := a.deps.Network.GetForwarding(s.ifName)
 		if err != nil {
 			a.log.Warn("forwarding watchdog: cannot read forwarding state",
 				"interface", s.ifName, "error", err)
@@ -1576,7 +1742,7 @@ func (a *Agent) checkAndRepairForwarding() {
 		if !enabled {
 			a.log.Warn("forwarding watchdog: forwarding was disabled externally, re-enabling",
 				"interface", s.ifName)
-			if err := tunnel.SetForwarding(s.ifName, true); err != nil {
+			if err := a.deps.Network.SetForwarding(s.ifName, true); err != nil {
 				a.log.Error("forwarding watchdog: failed to re-enable forwarding",
 					"interface", s.ifName, "error", err)
 			} else {

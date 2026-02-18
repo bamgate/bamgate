@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -245,8 +244,14 @@ func (c *Client) dial(ctx context.Context) error {
 		}
 	}
 
-	conn, _, err := websocket.Dial(dialCtx, c.cfg.ServerURL, opts)
+	conn, resp, err := websocket.Dial(dialCtx, c.cfg.ServerURL, opts)
 	if err != nil {
+		// Wrap the error with the HTTP status code when available so
+		// callers can detect specific failures (e.g. 401) without
+		// fragile string matching on the error message.
+		if resp != nil {
+			return &httpStatusError{StatusCode: resp.StatusCode, Err: err}
+		}
 		return err
 	}
 
@@ -341,10 +346,32 @@ func (c *Client) readMessages(ctx context.Context) error {
 	}
 }
 
+// httpStatusError is returned when the WebSocket dial receives an HTTP
+// response with a non-101 status code (e.g. 401 Unauthorized). This
+// provides a structured alternative to string-matching on the error message.
+type httpStatusError struct {
+	StatusCode int
+	Err        error // the original dial error
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("HTTP %d: %v", e.StatusCode, e.Err)
+}
+
+func (e *httpStatusError) Unwrap() error {
+	return e.Err
+}
+
 // isHTTP401 checks whether an error is an HTTP 401 response from the server.
 func isHTTP401(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "status code 101 but got 401")
+	var httpErr *httpStatusError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnauthorized
 }
+
+// maxAuthRefreshes is the maximum number of consecutive 401 → refresh → retry
+// cycles allowed before giving up. This prevents an infinite loop when the
+// refresh succeeds (returns a new token) but the server still rejects it.
+const maxAuthRefreshes = 3
 
 // reconnect attempts to re-establish the connection with exponential backoff.
 // Returns true if reconnection succeeded, false if it should give up.
@@ -355,7 +382,9 @@ func isHTTP401(err error) bool {
 // When the server returns HTTP 401 and an OnAuthFailure callback is configured,
 // the callback is invoked to refresh credentials before the next attempt. The
 // backoff counter is reset after a successful refresh so that the retry with
-// fresh credentials happens promptly.
+// fresh credentials happens promptly. To avoid an infinite loop when the
+// refresh succeeds but the server keeps rejecting the new token, at most
+// maxAuthRefreshes consecutive refresh attempts are allowed.
 func (c *Client) reconnect(ctx context.Context) bool {
 	initialDelay := c.cfg.Reconnect.InitialDelay
 	if initialDelay <= 0 {
@@ -374,6 +403,8 @@ func (c *Client) reconnect(ctx context.Context) bool {
 		immediate = true
 	default:
 	}
+
+	authRefreshes := 0 // consecutive 401-refresh cycles
 
 	for attempt := 1; maxAttempts == 0 || attempt <= maxAttempts; attempt++ {
 		if immediate && attempt == 1 {
@@ -406,8 +437,17 @@ func (c *Client) reconnect(ctx context.Context) bool {
 			// On 401, invoke the auth failure callback to refresh credentials.
 			// If it succeeds, reset the backoff so the next attempt is immediate
 			// with the fresh token. If it fails, continue normal backoff.
+			// Limit consecutive refresh cycles to prevent infinite loops when
+			// the refresh succeeds but the server keeps rejecting the new token.
 			if isHTTP401(err) && c.cfg.OnAuthFailure != nil {
-				c.log.Info("server returned 401, refreshing credentials")
+				authRefreshes++
+				if authRefreshes > maxAuthRefreshes {
+					c.log.Error("too many consecutive auth refresh attempts, giving up",
+						"refreshes", authRefreshes-1)
+					return false
+				}
+				c.log.Info("server returned 401, refreshing credentials",
+					"refresh_attempt", authRefreshes, "max", maxAuthRefreshes)
 				if refreshErr := c.cfg.OnAuthFailure(); refreshErr != nil {
 					c.log.Error("credential refresh failed", "error", refreshErr)
 				} else {
@@ -419,6 +459,9 @@ func (c *Client) reconnect(ctx context.Context) bool {
 			}
 			continue
 		}
+
+		// Connection succeeded — reset the auth refresh counter.
+		authRefreshes = 0
 
 		if err := c.sendJoin(ctx); err != nil {
 			c.log.Warn("rejoin failed", "attempt", attempt, "error", err)

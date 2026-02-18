@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-17 (session 26)
+Last updated: 2026-02-18 (session 27)
 
 ## Current Phase
 
@@ -56,6 +56,8 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 | ~~QR invite codes~~ | ~~`cmd/bamgate/cmd_invite.go`~~ | ~~Removed — replaced by GitHub OAuth Device Auth flow~~ |
 | Install script + self-update | `install.sh`, `cmd_update.go` | `curl\|sh` install, `bamgate update` self-update |
 | Vendored anet | `third_party/anet/` | Patched `wlynxg/anet` for Android pion/transport compat |
+| Integration test suite | `internal/agent/*_test.go` | 16 tests: fake TUN/WG + real signaling + real WebRTC, no root needed |
+| Docker e2e tests | `test/e2e/` | 3-peer mesh with real TUN + WireGuard + WebRTC, `make e2e` |
 
 See [IDEAS.md](IDEAS.md) for the backlog of future work, code health improvements, and feature ideas.
 
@@ -81,7 +83,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 |---------|-------|--------|
 | `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_restart.go, cmd_setup.go, cmd_login.go, cmd_worker.go, cmd_devices.go, cmd_qr.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_logs.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go, exec_unix.go, exec_windows.go | **Implemented + tested** — Cobra subcommands: setup (GitHub OAuth), login, up, down, restart, worker (install/update/uninstall/info), devices (list/configure/revoke), qr, status, logs, genkey, update, uninstall |
 | `cmd/bamgate-hub` | main.go | **Implemented** — standalone signaling server |
-| `internal/agent` | agent.go, agent_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection, JWT refresh loop |
+| `internal/agent` | agent.go, deps.go, agent_test.go, agent_integration_test.go, fake_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection, JWT refresh loop. 16 integration tests (fake TUN/WG + real signaling + real WebRTC). Docker e2e tests in `test/e2e/` |
 | `internal/auth` | github.go, tokens.go | **Implemented** — GitHub Device Auth flow (RFC 8628), register/refresh/list/revoke API client |
 | `internal/control` | server.go, server_test.go | **Implemented + tested** — Unix socket API: status, peer offerings, peer configure |
 | `internal/bridge` | bridge.go, bridge_test.go | **Implemented + tested** |
@@ -119,6 +121,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.15.0 | 2026-02-18 | Fix 9 bugs: ICE candidate buffering, orphaned PeerConnection leak, cleanup order, ICE restart candidate race, 0.0.0.0/0 AllowedIPs security fix, infinite 401 retry, tokenMu data race, fragile 401 detection, jwtRefreshLoop ignores cancellation. Integration test suite (16 tests). Docker e2e tests. |
 | v1.14.0 | 2026-02-17 | `bamgate logs` command — view service logs without knowing platform-specific tools |
 | v1.13.1 | 2026-02-17 | Fix JWT expiry after suspend/resume, fix reconnect backoff overflow (45k request storm), fix ICE restart glare after sleep |
 | v1.13.0 | 2026-02-16 | Merge `peers` into `devices`: unified device list (server + live peers), lipgloss table, interactive revoke/configure, Android DevicesScreen, README rewrite |
@@ -158,6 +161,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 27 | 2026-02-18 | Fix 9 connection/auth bugs, add integration test suite (16 tests) + Docker e2e tests. **WebRTC bugs:** (1) ICE candidates arriving before SetRemoteDescription silently dropped — buffer in peerState, flush after SDP set; (2) createRTCPeer overwrites existing rtcPeer without closing — capture old peer under lock, close outside; (3) removePeer cleanup order — WG peer first, then bridge, then PC; (4) ICE restart candidates dropped due to ufrag mismatch race — use full ICE gathering (not trickle) for restart offers/answers via GatheringCompletePromise. **Auth/config bugs:** (5) peers without address get 0.0.0.0/0 AllowedIPs (security) — reject peers with no valid address; (6) infinite 401→refresh→retry loop — cap at 3 consecutive auth refreshes; (7) tokenMu race on RefreshToken — protect both jwtToken and RefreshToken under tokenMu; (8) fragile 401 detection via string matching — typed httpStatusError + errors.As; (9) jwtRefreshLoop time.Sleep ignores context — use select. **Test infrastructure:** dependency injection via Deps struct (8 interfaces), fake test doubles, 16 integration tests with real signaling + real WebRTC, Docker e2e (3-peer mesh with real TUN + WireGuard), `make e2e` target |
 | 26 | 2026-02-17 | `bamgate logs` command: view daemon logs with `-f`/`--follow` and `-n`/`--lines` flags, shells out to `journalctl` on Linux and `tail /var/log/bamgate.log` on macOS, `syscall.Exec` replaces process for native output, build-tagged `exec_unix.go`/`exec_windows.go` for cross-platform support |
 | 25 | 2026-02-17 | Fix three bugs causing broken connections after laptop suspend/resume: (1) signaling reconnect loop retries with expired JWT indefinitely — add `OnAuthFailure` callback to trigger immediate JWT refresh on 401; (2) exponential backoff overflows to zero at high attempt counts (`math.Pow(2, 45000)` → `+Inf` → negative `time.Duration`), causing ~45k requests in minutes — cap exponent and guard against `<= 0`; (3) ICE restart fails with `InvalidModificationError` when PeerConnection is stuck in `have-local-offer` from unanswered previous restart — rollback to `stable` before creating new offer |
 | 24 | 2026-02-16 | Consolidate `peers` into `devices`: delete `cmd_peers.go`, rewrite `cmd_devices.go` with merged server device list + live peer data, `lipgloss/table` for ANSI-safe column rendering, interactive `devices revoke` (huh.Select + huh.Confirm), fix current device showing offline, mobile bindings (`ListDevices`, `GetDeviceID`, `CurrentJWT`), Android `DevicesScreen` replacing `PeersScreen`, delete outdated docs (`android-status.md`, `macos-status.md`), full README rewrite, table cell padding for readability |
