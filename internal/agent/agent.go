@@ -401,38 +401,23 @@ func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) err
 			"peer_id", p.PeerID, "public_key", p.PublicKey,
 			"address", p.Address, "routes", p.Routes, "metadata", p.Metadata)
 
-		// Check if this peer was marked for ICE restart by
-		// NotifyNetworkChange. If so, trigger the restart now — signaling
-		// is guaranteed to be connected at this point (we just received a
-		// peers list).
-		//
-		// If the PeerConnection is still alive, use attemptICERestart to
-		// renegotiate ICE on the existing connection. If the PC is nil or
-		// closed (e.g. the hub sent peer-left during the signaling
-		// reconnection), clear the stale state and fall through to the
-		// normal initiateConnection path to create a fresh connection.
+		// Check if this peer was marked for restart by NotifyNetworkChange.
+		// A network change (wifi→mobile, sleep/wake) is a hard break: the
+		// source IP changed, TURN allocations are stale, and the old ICE
+		// transport is dead. Rather than attempting ICE restart on the
+		// existing PeerConnection (which leaves stale TURN permission
+		// refresh goroutines and doesn't re-trigger onDataChannelOpen for
+		// WireGuard re-configuration), we tear down everything and create
+		// a fresh connection from scratch.
 		a.mu.Lock()
 		ps, exists := a.peers[p.PeerID]
 		if exists && ps.needsRestart {
 			ps.needsRestart = false
-			pcAlive := ps.rtcPeer != nil &&
-				ps.rtcPeer.ConnectionState() != webrtc.ICEConnectionStateClosed
-			// Update address/routes/metadata in case the peer changed.
-			ps.address = p.Address
-			ps.routes = p.Routes
-			ps.metadata = p.Metadata
 			a.mu.Unlock()
-
-			if pcAlive {
-				a.log.Info("triggering deferred ICE restart after network change", "peer_id", p.PeerID)
-				go a.attemptICERestart(ctx, p.PeerID)
-				continue
-			}
-			// PC is dead — remove stale state and fall through to create
-			// a fresh connection via the normal offer/answer path.
-			a.log.Info("peer connection closed during reconnect, creating fresh connection",
+			a.log.Info("network change: tearing down stale connection, will rebuild",
 				"peer_id", p.PeerID)
 			a.removePeer(p.PeerID)
+			// Fall through to the normal offer/answer path below.
 		} else {
 			a.mu.Unlock()
 		}
@@ -717,9 +702,22 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, addre
 		state := ps.rtcPeer.ConnectionState()
 		switch state {
 		case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
+			// ICE says connected, but verify the data channel is actually
+			// open. After a remote peer reconnects (e.g. network change),
+			// they may have torn down their PC and created a new one. Our
+			// ICE connection might still appear connected (or reconnect via
+			// ICE restart), but the SCTP/data channel is dead because the
+			// remote side has a different PC. Detect this and rebuild.
+			dc := ps.rtcPeer.DataChannel()
+			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+				a.mu.Unlock()
+				a.log.Debug("already connected to peer, skipping", "peer_id", peerID)
+				return nil
+			}
 			a.mu.Unlock()
-			a.log.Debug("already connected to peer, skipping", "peer_id", peerID)
-			return nil
+			a.log.Info("ICE connected but data channel not open, rebuilding",
+				"peer_id", peerID, "dc_state", dcStateString(dc))
+			a.removePeer(peerID)
 		case webrtc.ICEConnectionStateNew, webrtc.ICEConnectionStateChecking:
 			// An offer is already in flight or ICE is still gathering/checking.
 			// Don't replace it — wait for it to either succeed or fail.
@@ -1311,6 +1309,16 @@ func (a *Agent) handleICEStateChange(ctx context.Context, peerID string, state w
 		a.log.Info("ICE connection established", "peer_id", peerID, "state", state.String())
 
 	case webrtc.ICEConnectionStateDisconnected:
+		// If needsRestart is set, NotifyNetworkChange already scheduled a
+		// full teardown+rebuild via handlePeers. Don't start a grace timer
+		// or attempt ICE restart — it would race with signaling reconnection
+		// and waste restart attempts with "not connected" errors.
+		if ps.needsRestart {
+			a.mu.Unlock()
+			a.log.Debug("ICE disconnected but needsRestart set, skipping grace timer",
+				"peer_id", peerID)
+			return
+		}
 		// Transient disconnection — start a grace timer. ICE may reconnect
 		// on its own (e.g. after a brief wifi dropout).
 		if ps.restartTimer != nil {
@@ -1327,6 +1335,13 @@ func (a *Agent) handleICEStateChange(ctx context.Context, peerID string, state w
 		a.mu.Unlock()
 
 	case webrtc.ICEConnectionStateFailed:
+		// If needsRestart is set, let handlePeers do the full rebuild.
+		if ps.needsRestart {
+			a.mu.Unlock()
+			a.log.Debug("ICE failed but needsRestart set, skipping restart",
+				"peer_id", peerID)
+			return
+		}
 		// Hard failure — attempt restart immediately.
 		if ps.restartTimer != nil {
 			ps.restartTimer.Stop()
@@ -1400,6 +1415,15 @@ func (a *Agent) attemptICERestart(ctx context.Context, peerID string) {
 		a.log.Error("sending ICE restart offer", "peer_id", peerID, "error", err)
 		// Don't remove peer — signaling might reconnect and we can retry.
 	}
+}
+
+// dcStateString returns the data channel state as a string, or "nil" if the
+// data channel is nil.
+func dcStateString(dc *webrtc.DataChannel) string {
+	if dc == nil {
+		return "nil"
+	}
+	return dc.ReadyState().String()
 }
 
 // shutdown tears down all peer connections.

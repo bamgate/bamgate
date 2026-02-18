@@ -121,6 +121,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.15.2 | 2026-02-18 | Fix network switch reconnection: full teardown+rebuild instead of ICE restart (stale TURN/data channels), suppress spurious ICE restart attempts during reconnect, detect dead data channels on connected peers. |
 | v1.15.1 | 2026-02-18 | Fix Android reconnection: defer ICE restart until signaling reconnects (was silently dropping restart offers). TURN allocation hibernation persistence. |
 | v1.15.0 | 2026-02-18 | Fix 9 bugs: ICE candidate buffering, orphaned PeerConnection leak, cleanup order, ICE restart candidate race, 0.0.0.0/0 AllowedIPs security fix, infinite 401 retry, tokenMu data race, fragile 401 detection, jwtRefreshLoop ignores cancellation. Integration test suite (16 tests). Docker e2e tests. |
 | v1.14.0 | 2026-02-17 | `bamgate logs` command — view service logs without knowing platform-specific tools |
