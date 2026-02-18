@@ -50,6 +50,7 @@ func init() {
 	rootCmd.AddCommand(downCmd)
 	rootCmd.AddCommand(restartCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(devicesCmd)
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(configCmd)

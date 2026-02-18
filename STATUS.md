@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-17 (session 25)
+Last updated: 2026-02-17 (session 26)
 
 ## Current Phase
 
@@ -28,7 +28,7 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 | WireGuard TUN + device | `internal/tunnel/` | TUN creation, UAPI config, device lifecycle, custom Bind |
 | Bridge (TUN <-> WebRTC) | `internal/bridge/` | Custom `conn.Bind` routing packets over data channels |
 | Agent orchestrator | `internal/agent/` | Peer lifecycle, ICE restart (3 retries), NAT/forwarding, watchdog |
-| CLI (Cobra) | `cmd/bamgate/` | `setup`, `login`, `up`, `down`, `restart`, `devices`, `worker` (install/update/uninstall/info), `status`, `genkey`, `update`, `uninstall` |
+| CLI (Cobra) | `cmd/bamgate/` | `setup`, `login`, `up`, `down`, `restart`, `devices`, `worker` (install/update/uninstall/info), `status`, `logs`, `genkey`, `update`, `uninstall` |
 | Standalone hub | `cmd/bamgate-hub/` | Lightweight signaling server for LAN testing |
 | Control server | `internal/control/` | Unix socket JSON status API, smart path resolution |
 | Subnet routing | config + protocol + agent | `[device] routes`, propagated via signaling, AllowedIPs per peer |
@@ -79,7 +79,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Package | Files | Status |
 |---------|-------|--------|
-| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_restart.go, cmd_setup.go, cmd_login.go, cmd_worker.go, cmd_devices.go, cmd_qr.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go | **Implemented + tested** — Cobra subcommands: setup (GitHub OAuth), login, up, down, restart, worker (install/update/uninstall/info), devices (list/configure/revoke), qr, status, genkey, update, uninstall |
+| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_restart.go, cmd_setup.go, cmd_login.go, cmd_worker.go, cmd_devices.go, cmd_qr.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_logs.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go, exec_unix.go, exec_windows.go | **Implemented + tested** — Cobra subcommands: setup (GitHub OAuth), login, up, down, restart, worker (install/update/uninstall/info), devices (list/configure/revoke), qr, status, logs, genkey, update, uninstall |
 | `cmd/bamgate-hub` | main.go | **Implemented** — standalone signaling server |
 | `internal/agent` | agent.go, agent_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection, JWT refresh loop |
 | `internal/auth` | github.go, tokens.go | **Implemented** — GitHub Device Auth flow (RFC 8628), register/refresh/list/revoke API client |
@@ -119,6 +119,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.14.0 | 2026-02-17 | `bamgate logs` command — view service logs without knowing platform-specific tools |
 | v1.13.1 | 2026-02-17 | Fix JWT expiry after suspend/resume, fix reconnect backoff overflow (45k request storm), fix ICE restart glare after sleep |
 | v1.13.0 | 2026-02-16 | Merge `peers` into `devices`: unified device list (server + live peers), lipgloss table, interactive revoke/configure, Android DevicesScreen, README rewrite |
 | v1.12.0 | 2026-02-16 | Android network change + sleep/wake recovery: proactive ICE restart and signaling reconnect on connectivity change or screen unlock |
@@ -157,6 +158,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 26 | 2026-02-17 | `bamgate logs` command: view daemon logs with `-f`/`--follow` and `-n`/`--lines` flags, shells out to `journalctl` on Linux and `tail /var/log/bamgate.log` on macOS, `syscall.Exec` replaces process for native output, build-tagged `exec_unix.go`/`exec_windows.go` for cross-platform support |
 | 25 | 2026-02-17 | Fix three bugs causing broken connections after laptop suspend/resume: (1) signaling reconnect loop retries with expired JWT indefinitely — add `OnAuthFailure` callback to trigger immediate JWT refresh on 401; (2) exponential backoff overflows to zero at high attempt counts (`math.Pow(2, 45000)` → `+Inf` → negative `time.Duration`), causing ~45k requests in minutes — cap exponent and guard against `<= 0`; (3) ICE restart fails with `InvalidModificationError` when PeerConnection is stuck in `have-local-offer` from unanswered previous restart — rollback to `stable` before creating new offer |
 | 24 | 2026-02-16 | Consolidate `peers` into `devices`: delete `cmd_peers.go`, rewrite `cmd_devices.go` with merged server device list + live peer data, `lipgloss/table` for ANSI-safe column rendering, interactive `devices revoke` (huh.Select + huh.Confirm), fix current device showing offline, mobile bindings (`ListDevices`, `GetDeviceID`, `CurrentJWT`), Android `DevicesScreen` replacing `PeersScreen`, delete outdated docs (`android-status.md`, `macos-status.md`), full README rewrite, table cell padding for readability |
 | 23 | 2026-02-16 | Android network change recovery: `ConnectivityManager.NetworkCallback` + `ACTION_USER_PRESENT` BroadcastReceiver in VPN service notify Go tunnel on network change or screen unlock, `Agent.NotifyNetworkChange()` with 3s debounce triggers immediate ICE restart on all peers and signaling force-reconnect, `signaling.Client.ForceReconnect()` skips exponential backoff for instant reconnection, mobile `Tunnel.NotifyNetworkChange()` exposed via gomobile |

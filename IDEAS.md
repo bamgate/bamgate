@@ -167,4 +167,35 @@ instead of via invite codes.
 - Future providers (GitLab, Google, etc.) plug in alongside GitHub — the Worker
   only validates its own JWTs, never talks to the provider directly at runtime
 
+### `bamgate logs` command
+
+Users have no way to check daemon logs without knowing the platform-specific
+incantation (`journalctl` on Linux, `/var/log/bamgate.log` on macOS). Add a
+`bamgate logs` command that does the right thing automatically.
+
+**Current state:**
+- Linux: logs go to stderr, captured by systemd journal (`journalctl -u bamgate`)
+- macOS: logs go to `/var/log/bamgate.log` (configured in the generated launchd plist)
+- No CLI command, no control socket endpoint, no docs for any of this
+
+**Implementation — shell out to native tools:**
+
+New file `cmd/bamgate/cmd_logs.go`, registered in `main.go`.
+
+| Platform | What `bamgate logs` does |
+|----------|--------------------------|
+| Linux | Execs `journalctl -u bamgate -n <lines> --no-pager [--follow]` |
+| macOS | Execs `tail -n <lines> [-f] /var/log/bamgate.log` |
+
+**Flags:**
+- `-f` / `--follow` (bool) — stream logs in real-time
+- `-n` / `--lines` (int, default 100) — number of recent lines to show
+
+**Details:**
+- Wire child process stdout/stderr to the current terminal so output flows naturally
+- On macOS, check that the log file exists first; give a clear error if missing
+  (e.g., "bamgate service hasn't been set up yet — run `sudo bamgate setup`")
+- On unsupported platforms, print a helpful message pointing to the right location
+- No control socket changes, no new dependencies — one new file, one line in `main.go`
+
 <!-- Add new feature ideas here -->
