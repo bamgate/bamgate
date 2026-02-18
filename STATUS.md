@@ -121,6 +121,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.15.5 | 2026-02-18 | Fix connection flapping: skip teardown when ICE is new/checking (offer in flight), tear down for connected/disconnected/failed/closed. v1.15.4 was too aggressive — tearing down in-progress connections caused repeated join/leave loops. |
 | v1.15.4 | 2026-02-18 | Fix reconnection after network switch: always tear down existing connection when peer re-joins (hub notification = new PC on remote side). Removes fragile DC state check that missed dead SCTP associations. |
 | v1.15.3 | 2026-02-18 | Fix zombie peers after signaling reconnect: clean up closed PeerConnections in handlePeers and handleOffer, deduplicate peers list. |
 | v1.15.2 | 2026-02-18 | Fix network switch reconnection: full teardown+rebuild instead of ICE restart (stale TURN/data channels), suppress spurious ICE restart attempts during reconnect, detect dead data channels on connected peers. |

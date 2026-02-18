@@ -725,18 +725,28 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, addre
 	}
 
 	a.mu.Lock()
-	// If we already have any connection to this peer, tear it down.
-	// This function is called from handlePeers, which means the hub
-	// notified us that this peer just (re-)joined. If a peer re-joined,
-	// they have a new PeerConnection — our old one is stale even if ICE
-	// still shows "connected" and the data channel still reports "open"
-	// (SCTP won't detect the dead association immediately).
+	// Check if we already have a connection to this peer.
 	if ps, exists := a.peers[peerID]; exists && ps.rtcPeer != nil {
 		state := ps.rtcPeer.ConnectionState()
-		a.mu.Unlock()
-		a.log.Info("tearing down existing connection for re-joining peer",
-			"peer_id", peerID, "ice_state", state.String())
-		a.removePeer(peerID)
+		switch state {
+		case webrtc.ICEConnectionStateNew, webrtc.ICEConnectionStateChecking:
+			// An offer is already in flight or ICE is still checking.
+			// Don't tear it down — let it either succeed or fail.
+			a.mu.Unlock()
+			a.log.Debug("connection attempt already in progress, skipping",
+				"peer_id", peerID, "ice_state", state.String())
+			return nil
+		default:
+			// Connected, disconnected, failed, or closed — tear down.
+			// If the peer re-joined (hub notification), they have a new
+			// PeerConnection. Our existing one is stale even if ICE shows
+			// "connected" and the data channel reports "open" — SCTP
+			// won't detect the dead association immediately.
+			a.mu.Unlock()
+			a.log.Info("tearing down existing connection for re-joining peer",
+				"peer_id", peerID, "ice_state", state.String())
+			a.removePeer(peerID)
+		}
 	} else {
 		a.mu.Unlock()
 	}
