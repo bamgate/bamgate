@@ -385,42 +385,57 @@ func (a *Agent) handleMessage(ctx context.Context, msg protocol.Message) error {
 	}
 }
 
-// handlePeers processes the initial peer list. For each existing peer, we
-// initiate a WebRTC connection if our peer ID is lexicographically smaller
-// (to avoid both sides simultaneously offering).
+// handlePeers processes a peer list from the signaling server. The hub sends
+// this in two situations:
+//   - On join/reconnect: the full list of currently connected peers.
+//   - When a new peer arrives: a single-entry list with just the new peer.
+//
+// We cannot distinguish these cases from the message alone, so we avoid
+// removing peers "not in the list" (that would break the notification case).
+// Instead we clean up peers that are provably stale:
+//   - Peers with closed PeerConnections (zombies from signaling disconnect).
+//   - Peers marked needsRestart (network change: full teardown+rebuild).
+//   - Duplicate entries in the same message (hub rehydration artifact).
 func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) error {
 	a.log.Info("received peer list", "count", len(msg.Peers))
+
+	// Collect zombie and needsRestart peers for teardown.
+	a.mu.Lock()
+	var stale []string
+	for id, ps := range a.peers {
+		if ps.needsRestart {
+			ps.needsRestart = false
+			stale = append(stale, id)
+			continue
+		}
+		if ps.rtcPeer != nil && ps.rtcPeer.ConnectionState() == webrtc.ICEConnectionStateClosed {
+			stale = append(stale, id)
+			continue
+		}
+	}
+	a.mu.Unlock()
+
+	for _, id := range stale {
+		a.log.Info("removing stale peer", "peer_id", id)
+		a.removePeer(id)
+	}
+
+	// Process each peer in the list. Use a seen set to skip duplicates
+	// (the hub occasionally sends the same peer twice after rehydration).
+	seen := make(map[string]struct{}, len(msg.Peers))
 	for _, p := range msg.Peers {
-		// Skip ourselves — can appear after DO hibernation/rehydration or
-		// signaling reconnection.
 		if p.PeerID == a.cfg.Device.Name {
 			continue
 		}
+		if _, dup := seen[p.PeerID]; dup {
+			a.log.Debug("skipping duplicate peer in list", "peer_id", p.PeerID)
+			continue
+		}
+		seen[p.PeerID] = struct{}{}
 
 		a.log.Info("discovered peer",
 			"peer_id", p.PeerID, "public_key", p.PublicKey,
 			"address", p.Address, "routes", p.Routes, "metadata", p.Metadata)
-
-		// Check if this peer was marked for restart by NotifyNetworkChange.
-		// A network change (wifi→mobile, sleep/wake) is a hard break: the
-		// source IP changed, TURN allocations are stale, and the old ICE
-		// transport is dead. Rather than attempting ICE restart on the
-		// existing PeerConnection (which leaves stale TURN permission
-		// refresh goroutines and doesn't re-trigger onDataChannelOpen for
-		// WireGuard re-configuration), we tear down everything and create
-		// a fresh connection from scratch.
-		a.mu.Lock()
-		ps, exists := a.peers[p.PeerID]
-		if exists && ps.needsRestart {
-			ps.needsRestart = false
-			a.mu.Unlock()
-			a.log.Info("network change: tearing down stale connection, will rebuild",
-				"peer_id", p.PeerID)
-			a.removePeer(p.PeerID)
-			// Fall through to the normal offer/answer path below.
-		} else {
-			a.mu.Unlock()
-		}
 
 		// Determine who offers: the peer with the smaller ID.
 		if a.cfg.Device.Name < p.PeerID {
@@ -466,31 +481,44 @@ func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) err
 	hasConnection := exists && ps.rtcPeer != nil
 
 	if hasConnection {
-		weArePreferred := a.cfg.Device.Name < msg.From
 		iceState := ps.rtcPeer.ConnectionState()
-		isConnected := iceState == webrtc.ICEConnectionStateConnected ||
-			iceState == webrtc.ICEConnectionStateCompleted
 
-		// Case 1: We sent an ICE restart offer and we're the preferred offerer.
-		// The remote side should answer our offer, not send its own.
-		if ps.pendingRestart && weArePreferred {
+		// Zombie detection: if the PeerConnection is closed (e.g. from a
+		// signaling disconnect that pion detected), tear it down and treat
+		// this as a fresh offer. Trying to apply an offer to a closed PC
+		// gives "InvalidStateError: connection closed".
+		if iceState == webrtc.ICEConnectionStateClosed {
 			a.mu.Unlock()
-			a.log.Info("ignoring offer: we have a pending restart and are the preferred offerer",
-				"from", msg.From, "ice_state", iceState.String())
-			return nil
-		}
-
-		// Case 2: Connection is working and we're the preferred offerer.
-		// The remote peer must have restarted (e.g. settings change, app
-		// restart). Tear down the stale connection and accept the new offer.
-		if isConnected && weArePreferred {
-			a.mu.Unlock()
-			a.log.Info("peer sent new offer while connected, tearing down stale connection",
-				"from", msg.From, "ice_state", iceState.String())
+			a.log.Info("existing connection is closed, tearing down zombie",
+				"from", msg.From)
 			a.removePeer(msg.From)
 			hasConnection = false
 		} else {
-			a.mu.Unlock()
+			weArePreferred := a.cfg.Device.Name < msg.From
+			isConnected := iceState == webrtc.ICEConnectionStateConnected ||
+				iceState == webrtc.ICEConnectionStateCompleted
+
+			// Case 1: We sent an ICE restart offer and we're the preferred offerer.
+			// The remote side should answer our offer, not send its own.
+			if ps.pendingRestart && weArePreferred {
+				a.mu.Unlock()
+				a.log.Info("ignoring offer: we have a pending restart and are the preferred offerer",
+					"from", msg.From, "ice_state", iceState.String())
+				return nil
+			}
+
+			// Case 2: Connection is working and we're the preferred offerer.
+			// The remote peer must have restarted (e.g. settings change, app
+			// restart). Tear down the stale connection and accept the new offer.
+			if isConnected && weArePreferred {
+				a.mu.Unlock()
+				a.log.Info("peer sent new offer while connected, tearing down stale connection",
+					"from", msg.From, "ice_state", iceState.String())
+				a.removePeer(msg.From)
+				hasConnection = false
+			} else {
+				a.mu.Unlock()
+			}
 		}
 	} else {
 		a.mu.Unlock()
