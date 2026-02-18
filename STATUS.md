@@ -121,6 +121,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.15.4 | 2026-02-18 | Fix reconnection after network switch: always tear down existing connection when peer re-joins (hub notification = new PC on remote side). Removes fragile DC state check that missed dead SCTP associations. |
 | v1.15.3 | 2026-02-18 | Fix zombie peers after signaling reconnect: clean up closed PeerConnections in handlePeers and handleOffer, deduplicate peers list. |
 | v1.15.2 | 2026-02-18 | Fix network switch reconnection: full teardown+rebuild instead of ICE restart (stale TURN/data channels), suppress spurious ICE restart attempts during reconnect, detect dead data channels on connected peers. |
 | v1.15.1 | 2026-02-18 | Fix Android reconnection: defer ICE restart until signaling reconnects (was silently dropping restart offers). TURN allocation hibernation persistence. |

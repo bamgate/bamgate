@@ -725,40 +725,18 @@ func (a *Agent) initiateConnection(ctx context.Context, peerID, publicKey, addre
 	}
 
 	a.mu.Lock()
-	// Check if we already have an active or in-progress connection to this peer.
+	// If we already have any connection to this peer, tear it down.
+	// This function is called from handlePeers, which means the hub
+	// notified us that this peer just (re-)joined. If a peer re-joined,
+	// they have a new PeerConnection — our old one is stale even if ICE
+	// still shows "connected" and the data channel still reports "open"
+	// (SCTP won't detect the dead association immediately).
 	if ps, exists := a.peers[peerID]; exists && ps.rtcPeer != nil {
 		state := ps.rtcPeer.ConnectionState()
-		switch state {
-		case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
-			// ICE says connected, but verify the data channel is actually
-			// open. After a remote peer reconnects (e.g. network change),
-			// they may have torn down their PC and created a new one. Our
-			// ICE connection might still appear connected (or reconnect via
-			// ICE restart), but the SCTP/data channel is dead because the
-			// remote side has a different PC. Detect this and rebuild.
-			dc := ps.rtcPeer.DataChannel()
-			if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-				a.mu.Unlock()
-				a.log.Debug("already connected to peer, skipping", "peer_id", peerID)
-				return nil
-			}
-			a.mu.Unlock()
-			a.log.Info("ICE connected but data channel not open, rebuilding",
-				"peer_id", peerID, "dc_state", dcStateString(dc))
-			a.removePeer(peerID)
-		case webrtc.ICEConnectionStateNew, webrtc.ICEConnectionStateChecking:
-			// An offer is already in flight or ICE is still gathering/checking.
-			// Don't replace it — wait for it to either succeed or fail.
-			a.mu.Unlock()
-			a.log.Debug("connection attempt already in progress, skipping",
-				"peer_id", peerID, "ice_state", state.String())
-			return nil
-		default:
-			// Failed/disconnected/closed — tear down and reconnect.
-			a.mu.Unlock()
-			a.log.Info("replacing stale connection", "peer_id", peerID, "ice_state", state.String())
-			a.removePeer(peerID)
-		}
+		a.mu.Unlock()
+		a.log.Info("tearing down existing connection for re-joining peer",
+			"peer_id", peerID, "ice_state", state.String())
+		a.removePeer(peerID)
 	} else {
 		a.mu.Unlock()
 	}
@@ -1443,15 +1421,6 @@ func (a *Agent) attemptICERestart(ctx context.Context, peerID string) {
 		a.log.Error("sending ICE restart offer", "peer_id", peerID, "error", err)
 		// Don't remove peer — signaling might reconnect and we can retry.
 	}
-}
-
-// dcStateString returns the data channel state as a string, or "nil" if the
-// data channel is nil.
-func dcStateString(dc *webrtc.DataChannel) string {
-	if dc == nil {
-		return "nil"
-	}
-	return dc.ReadyState().String()
 }
 
 // shutdown tears down all peer connections.
