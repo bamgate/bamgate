@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
@@ -65,6 +66,11 @@ var sendBinaryFn js.Value
 
 // turnSecretFn is the JS function that returns the TURN_SECRET env var.
 var turnSecretFn js.Value
+
+// saveTURNAllocFn is the JS function that persists a TURN allocation
+// into the WebSocket attachment so it survives Durable Object hibernation.
+// Set during init: jsSaveTURNAllocation(wsId, jsonString).
+var saveTURNAllocFn js.Value
 
 // generateNonce creates a simple time-based nonce.
 func generateNonce() string {
@@ -318,6 +324,7 @@ func handleAllocate(wsId int, msg *stun.Message, rawData []byte) {
 		AddLifetime(uint32(lifetime)).
 		Build(authKey)
 	sendBinary(wsId, resp)
+	saveTURNAllocation(wsId)
 }
 
 // handleRefresh processes a Refresh request (update or remove allocation).
@@ -368,6 +375,7 @@ func handleRefresh(wsId int, msg *stun.Message, rawData []byte) {
 		AddLifetime(uint32(lifetime)).
 		Build(alloc.authKey)
 	sendBinary(wsId, resp)
+	saveTURNAllocation(wsId)
 }
 
 // handleCreatePermission installs permissions for peer IPs.
@@ -402,6 +410,7 @@ func handleCreatePermission(wsId int, msg *stun.Message, rawData []byte) {
 	resp := stun.NewResponse(msg, stun.ClassSuccessResponse).
 		Build(alloc.authKey)
 	sendBinary(wsId, resp)
+	saveTURNAllocation(wsId)
 }
 
 // handleChannelBind binds a channel number to a peer address.
@@ -465,6 +474,7 @@ func handleChannelBind(wsId int, msg *stun.Message, rawData []byte) {
 	resp := stun.NewResponse(msg, stun.ClassSuccessResponse).
 		Build(alloc.authKey)
 	sendBinary(wsId, resp)
+	saveTURNAllocation(wsId)
 }
 
 // handleSend processes a Send indication — relay data to the target peer.
@@ -575,4 +585,128 @@ func removeTURNAllocation(wsId int) {
 		delete(relayByAddr, addrKey(alloc.relayAddr))
 	}
 	delete(turnAllocations, wsId)
+}
+
+// ==================== Hibernation Persistence ====================
+//
+// TURN allocations are stored in-memory but Durable Object hibernation
+// destroys the Go/Wasm runtime. To survive hibernation, allocation state
+// is serialized to the WebSocket attachment (which CF preserves) after
+// every mutation. On wake, _rehydrate() in JS calls goOnTURNRehydrate
+// to restore allocations from the persisted data.
+
+// turnAllocJSON is the JSON-serializable representation of an allocation.
+// Field names are kept short to stay within the 2 KB WebSocket attachment limit.
+type turnAllocJSON struct {
+	Username  string            `json:"u"`
+	Nonce     string            `json:"n"`
+	AuthKey   string            `json:"ak"`           // base64-encoded
+	RelayIP   string            `json:"ri"`           // e.g. "10.255.0.3"
+	RelayPort int               `json:"rp"`           // e.g. 50000
+	RelayHost int               `json:"rh"`           // host octet used (for nextRelayHost tracking)
+	CreatedAt int64             `json:"ca"`           // Unix seconds
+	Lifetime  int               `json:"lt"`           // seconds
+	Perms     []string          `json:"pm,omitempty"` // permitted peer IPs
+	Channels  map[string]string `json:"ch,omitempty"` // channel# (decimal string) -> "ip:port"
+}
+
+// saveTURNAllocation persists the current allocation state to the
+// WebSocket attachment via the JS bridge.
+func saveTURNAllocation(wsId int) {
+	alloc, exists := turnAllocations[wsId]
+	if !exists || alloc.authKey == nil || alloc.relayAddr.IP == nil {
+		return // Nothing meaningful to persist yet.
+	}
+
+	perms := make([]string, 0, len(alloc.permissions))
+	for ip := range alloc.permissions {
+		perms = append(perms, ip)
+	}
+
+	channels := make(map[string]string, len(alloc.channels))
+	for num, addr := range alloc.channels {
+		channels[strconv.Itoa(int(num))] = addr
+	}
+
+	j := turnAllocJSON{
+		Username:  alloc.username,
+		Nonce:     alloc.nonce,
+		AuthKey:   base64.StdEncoding.EncodeToString(alloc.authKey),
+		RelayIP:   alloc.relayAddr.IP.String(),
+		RelayPort: alloc.relayAddr.Port,
+		RelayHost: int(alloc.relayAddr.IP.To4()[3]),
+		CreatedAt: alloc.createdAt.Unix(),
+		Lifetime:  alloc.lifetime,
+		Perms:     perms,
+		Channels:  channels,
+	}
+
+	data, err := json.Marshal(j)
+	if err != nil {
+		return
+	}
+	saveTURNAllocFn.Invoke(wsId, string(data))
+}
+
+// jsOnTURNRehydrate restores a TURN allocation from a persisted JSON blob
+// after Durable Object hibernation. Called from JS: goOnTURNRehydrate(wsId, jsonString).
+func jsOnTURNRehydrate(_ js.Value, args []js.Value) any {
+	wsId := args[0].Int()
+	jsonStr := args[1].String()
+
+	var j turnAllocJSON
+	if err := json.Unmarshal([]byte(jsonStr), &j); err != nil {
+		return nil
+	}
+
+	authKey, err := base64.StdEncoding.DecodeString(j.AuthKey)
+	if err != nil {
+		return nil
+	}
+
+	relayIP := net.ParseIP(j.RelayIP)
+	if relayIP == nil {
+		return nil
+	}
+
+	relayAddr := stun.XORAddress{IP: relayIP.To4(), Port: j.RelayPort}
+
+	permissions := make(map[string]bool, len(j.Perms))
+	for _, ip := range j.Perms {
+		permissions[ip] = true
+	}
+
+	channelsByNum := make(map[uint16]string, len(j.Channels))
+	channelByAddr := make(map[string]uint16, len(j.Channels))
+	for numStr, addr := range j.Channels {
+		num, err := strconv.Atoi(numStr)
+		if err != nil {
+			continue
+		}
+		channelsByNum[uint16(num)] = addr
+		channelByAddr[addr] = uint16(num)
+	}
+
+	alloc := &allocation{
+		wsId:          wsId,
+		username:      j.Username,
+		nonce:         j.Nonce,
+		authKey:       authKey,
+		relayAddr:     relayAddr,
+		createdAt:     time.Unix(j.CreatedAt, 0),
+		lifetime:      j.Lifetime,
+		permissions:   permissions,
+		channels:      channelsByNum,
+		channelByAddr: channelByAddr,
+	}
+
+	turnAllocations[wsId] = alloc
+	relayByAddr[addrKey(relayAddr)] = wsId
+
+	// Ensure nextRelayHost stays ahead of all restored allocations.
+	if hostOctet := j.RelayHost; hostOctet >= nextRelayHost {
+		nextRelayHost = hostOctet + 1
+	}
+
+	return nil
 }

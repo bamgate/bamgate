@@ -1110,9 +1110,13 @@ func TestAgent_PeerWithoutAddress_NoWireGuardPeer(t *testing.T) {
 
 // --- Network change / force reconnect tests ---
 
-// TestAgent_NotifyNetworkChange verifies that calling NotifyNetworkChange
-// resets ICE restart counters, cancels grace timers, and triggers ICE restarts
-// for all connected peers. Also verifies debounce behavior.
+// TestAgent_NotifyNetworkChange verifies that calling NotifyNetworkChange:
+//  1. Resets ICE restart counters and cancels grace timers.
+//  2. Sets needsRestart=true on all peers (deferred restart).
+//  3. Does NOT immediately trigger ICE restart goroutines.
+//  4. When signaling reconnects and handlePeers runs, the deferred restart
+//     fires and the connection recovers.
+//  5. Debounce: rapid consecutive calls are coalesced.
 func TestAgent_NotifyNetworkChange(t *testing.T) {
 	t.Parallel()
 
@@ -1135,22 +1139,50 @@ func TestAgent_NotifyNetworkChange(t *testing.T) {
 	// Trigger network change notification.
 	pair.agentA.NotifyNetworkChange()
 
-	// Verify ICE state was reset.
-	waitFor(t, 5*time.Second, "ICE state reset after network change", func() bool {
-		pair.agentA.mu.Lock()
-		defer pair.agentA.mu.Unlock()
-		ps, ok := pair.agentA.peers["bravo"]
-		if !ok {
-			return false
-		}
-		// NotifyNetworkChange resets iceRestarts to 0 and stops the timer.
-		return ps.iceRestarts == 0 && ps.restartTimer == nil && !ps.pendingRestart
-	})
+	// Verify ICE state was reset AND needsRestart is set.
+	// NotifyNetworkChange should NOT fire ICE restart goroutines — it only
+	// sets the flag. The actual restart happens when handlePeers runs after
+	// signaling reconnects.
+	pair.agentA.mu.Lock()
+	ps, ok = pair.agentA.peers["bravo"]
+	if !ok {
+		pair.agentA.mu.Unlock()
+		t.Fatal("alpha has no bravo peer after NotifyNetworkChange")
+	}
+	if ps.iceRestarts != 0 {
+		t.Errorf("iceRestarts = %d, want 0", ps.iceRestarts)
+	}
+	if ps.restartTimer != nil {
+		t.Error("restartTimer should be nil after NotifyNetworkChange")
+	}
+	if ps.pendingRestart {
+		t.Error("pendingRestart should be false after NotifyNetworkChange")
+	}
+	if !ps.needsRestart {
+		t.Error("needsRestart should be true after NotifyNetworkChange")
+	}
+	pair.agentA.mu.Unlock()
 
-	// The peer should still exist and be connected.
+	// The peer should still exist and be connected (no immediate teardown).
 	if !pair.fakesA.WireGuard.getDevice().hasPeer(pair.pubKeyB) {
 		t.Error("alpha lost bravo's WireGuard peer after network change")
 	}
+
+	// Wait for signaling to reconnect, handlePeers to trigger the deferred
+	// restart, and the full connection to re-establish (data channel open →
+	// WireGuard peer re-added). The removePeer call during recovery clears
+	// the WG peer, so we must wait for it to be re-added.
+	waitFor(t, 15*time.Second, "deferred ICE restart completes and WG peer re-added", func() bool {
+		pair.agentA.mu.Lock()
+		ps, ok := pair.agentA.peers["bravo"]
+		needsRestart := ok && ps.needsRestart
+		pair.agentA.mu.Unlock()
+		if needsRestart {
+			return false
+		}
+		return pair.fakesA.WireGuard.getDevice() != nil &&
+			pair.fakesA.WireGuard.getDevice().hasPeer(pair.pubKeyB)
+	})
 
 	// Test debounce: a second call within networkChangeDebounce (3s)
 	// should be a no-op.
@@ -1166,19 +1198,15 @@ func TestAgent_NotifyNetworkChange(t *testing.T) {
 	pair.agentA.mu.Lock()
 	ps = pair.agentA.peers["bravo"]
 	restartsAfterDebounce := ps.iceRestarts
+	needsRestartAfterDebounce := ps.needsRestart
 	pair.agentA.mu.Unlock()
 
-	// If debounced, iceRestarts should still be 99 (not reset to 0).
-	// However, the first NotifyNetworkChange triggered an ICE restart
-	// which may have reconnected and reset the counter. So we check
-	// that the second call was a no-op by verifying the sentinel survives
-	// at least briefly.
-	if restartsAfterDebounce == 0 {
-		// The counter was reset, which means the debounce did not work
-		// (the second call also triggered restarts). But it could also
-		// mean the first call's restart completed and reconnected,
-		// resetting the counter. This is acceptable behavior.
-		// Only fail if the second call is provably not debounced.
-		t.Log("note: ICE restart counter was reset (possible reconnect from first call)")
+	// If debounced correctly, the sentinel value 99 should survive and
+	// needsRestart should NOT be set by the debounced call.
+	if restartsAfterDebounce != 99 {
+		t.Logf("note: iceRestarts = %d (expected 99; may have been reset by prior restart completing)", restartsAfterDebounce)
+	}
+	if needsRestartAfterDebounce {
+		t.Error("debounced NotifyNetworkChange should not set needsRestart")
 	}
 }

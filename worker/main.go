@@ -24,6 +24,7 @@ func main() {
 	// TURN relay callbacks:
 	js.Global().Set("goOnTURNMessage", js.FuncOf(jsOnTURNMessage))
 	js.Global().Set("goOnTURNClose", js.FuncOf(jsOnTURNClose))
+	js.Global().Set("goOnTURNRehydrate", js.FuncOf(jsOnTURNRehydrate))
 
 	// Store the JS send functions for Go → JS calls.
 	// jsSend(wsId, jsonString) — for signaling (text messages).
@@ -32,6 +33,8 @@ func main() {
 	sendBinaryFn = js.Global().Get("jsSendBinary")
 	// jsTURNSecret() — returns the TURN_SECRET env var.
 	turnSecretFn = js.Global().Get("jsTURNSecret")
+	// jsSaveTURNAllocation(wsId, jsonString) — persists TURN allocation to WS attachment.
+	saveTURNAllocFn = js.Global().Get("jsSaveTURNAllocation")
 
 	// Signal to the JS side that Go is ready.
 	js.Global().Call("goReady")

@@ -214,6 +214,7 @@ type peerState struct {
 	disconnectTime time.Time   // when ICE entered disconnected state
 	restartTimer   *time.Timer // grace period timer (nil = not running)
 	pendingRestart bool        // true while we've sent an ICE restart offer and are awaiting an answer
+	needsRestart   bool        // set by NotifyNetworkChange; cleared when handlePeers triggers the restart
 }
 
 // New creates a new Agent with the given configuration. Optional functional
@@ -399,6 +400,42 @@ func (a *Agent) handlePeers(ctx context.Context, msg *protocol.PeersMessage) err
 		a.log.Info("discovered peer",
 			"peer_id", p.PeerID, "public_key", p.PublicKey,
 			"address", p.Address, "routes", p.Routes, "metadata", p.Metadata)
+
+		// Check if this peer was marked for ICE restart by
+		// NotifyNetworkChange. If so, trigger the restart now — signaling
+		// is guaranteed to be connected at this point (we just received a
+		// peers list).
+		//
+		// If the PeerConnection is still alive, use attemptICERestart to
+		// renegotiate ICE on the existing connection. If the PC is nil or
+		// closed (e.g. the hub sent peer-left during the signaling
+		// reconnection), clear the stale state and fall through to the
+		// normal initiateConnection path to create a fresh connection.
+		a.mu.Lock()
+		ps, exists := a.peers[p.PeerID]
+		if exists && ps.needsRestart {
+			ps.needsRestart = false
+			pcAlive := ps.rtcPeer != nil &&
+				ps.rtcPeer.ConnectionState() != webrtc.ICEConnectionStateClosed
+			// Update address/routes/metadata in case the peer changed.
+			ps.address = p.Address
+			ps.routes = p.Routes
+			ps.metadata = p.Metadata
+			a.mu.Unlock()
+
+			if pcAlive {
+				a.log.Info("triggering deferred ICE restart after network change", "peer_id", p.PeerID)
+				go a.attemptICERestart(ctx, p.PeerID)
+				continue
+			}
+			// PC is dead — remove stale state and fall through to create
+			// a fresh connection via the normal offer/answer path.
+			a.log.Info("peer connection closed during reconnect, creating fresh connection",
+				"peer_id", p.PeerID)
+			a.removePeer(p.PeerID)
+		} else {
+			a.mu.Unlock()
+		}
 
 		// Determine who offers: the peer with the smaller ID.
 		if a.cfg.Device.Name < p.PeerID {
@@ -1062,12 +1099,13 @@ func (a *Agent) removePeer(peerID string) {
 }
 
 // NotifyNetworkChange should be called when the underlying network changes
-// (e.g. Android sleep/wake, wifi ↔ mobile data switch). It proactively
-// triggers ICE restarts on all connected peers and forces the signaling
-// WebSocket to reconnect if it is disconnected.
+// (e.g. Android sleep/wake, wifi ↔ mobile data switch). It forces the
+// signaling WebSocket to reconnect and marks all peers for ICE restart.
 //
-// This avoids waiting for ICE consent freshness timeouts (~30s) or signaling
-// reconnect backoff delays, recovering connectivity as fast as possible.
+// The actual ICE restart is deferred until signaling reconnects and the hub
+// sends a fresh peers list (handled by handlePeers). This avoids the race
+// where ICE restart offers are sent before signaling is connected — which
+// would silently drop the offer and leave the connection dead.
 //
 // Safe to call from any goroutine. No-op if the agent is not running.
 func (a *Agent) NotifyNetworkChange() {
@@ -1085,42 +1123,28 @@ func (a *Agent) NotifyNetworkChange() {
 		return
 	}
 	a.lastNetworkChange = time.Now()
-	a.mu.Unlock()
 
-	a.log.Info("network change detected, probing connections")
-
-	// Kick signaling — if the WebSocket is dead, this triggers an
-	// immediate reconnect (skipping exponential backoff).
-	a.sigClient.ForceReconnect()
-
-	// Trigger ICE restart on every connected peer. Cancel grace timers
-	// and reset restart counters so we get a full 3 attempts.
-	a.mu.Lock()
-	peerIDs := make([]string, 0, len(a.peers))
-	for id, ps := range a.peers {
-		// Cancel any pending grace timer — we want to restart now.
+	// Mark every peer for ICE restart. Cancel grace timers and reset
+	// restart counters so each peer gets a fresh set of attempts once
+	// signaling reconnects and handlePeers triggers the restart.
+	for _, ps := range a.peers {
 		if ps.restartTimer != nil {
 			ps.restartTimer.Stop()
 			ps.restartTimer = nil
 		}
-		// Reset restart counter so the peer gets a fresh set of attempts.
 		ps.iceRestarts = 0
 		ps.pendingRestart = false
-		peerIDs = append(peerIDs, id)
+		ps.needsRestart = true
 	}
 	a.mu.Unlock()
 
-	// Attempt ICE restart on each peer outside the lock.
-	// Use the agent's lifecycle context so restarts are cancelled if the
-	// agent shuts down. The goroutines ensure the caller (Android UI
-	// thread / broadcast receiver) does not block.
-	ctx := a.ctx
-	if ctx == nil {
-		return
-	}
-	for _, id := range peerIDs {
-		go a.attemptICERestart(ctx, id)
-	}
+	a.log.Info("network change detected, forcing signaling reconnect")
+
+	// Kick signaling — if the WebSocket is dead, this triggers an
+	// immediate reconnect (skipping exponential backoff). Once
+	// reconnected, the hub sends a fresh peers list which triggers
+	// handlePeers → attemptICERestart for peers with needsRestart.
+	a.sigClient.ForceReconnect()
 }
 
 // Status returns the current agent status for the control server.
@@ -1274,9 +1298,11 @@ func (a *Agent) handleICEStateChange(ctx context.Context, peerID string, state w
 	switch state {
 	case webrtc.ICEConnectionStateConnected, webrtc.ICEConnectionStateCompleted:
 		// Connection (re-)established. Reset restart counter and cancel any
-		// pending grace timer.
+		// pending grace timer. Also clear needsRestart — the connection is
+		// alive, no further restart needed.
 		ps.iceRestarts = 0
 		ps.pendingRestart = false
+		ps.needsRestart = false
 		if ps.restartTimer != nil {
 			ps.restartTimer.Stop()
 			ps.restartTimer = nil

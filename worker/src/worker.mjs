@@ -645,6 +645,17 @@ export class SignalingRoom {
         return self._getOrCreateTURNSecret();
       };
 
+      // Persist TURN allocation state into the WebSocket attachment so it
+      // survives Durable Object hibernation.
+      globalThis.jsSaveTURNAllocation = (wsId, jsonStr) => {
+        const ws = self._findWebSocket(wsId);
+        if (ws) {
+          const attachment = ws.deserializeAttachment();
+          attachment.turnAlloc = JSON.parse(jsonStr);
+          ws.serializeAttachment(attachment);
+        }
+      };
+
       // Signal from Go that it has registered all callbacks.
       globalThis.goReady = () => {
         self.goReady = true;
@@ -677,10 +688,13 @@ export class SignalingRoom {
       if (attachment.wsId >= maxWsId) {
         maxWsId = attachment.wsId + 1;
       }
-      // Only rehydrate signaling peers (not TURN connections — TURN state
-      // is transient and does not survive hibernation).
+      // Rehydrate signaling peers.
       if (attachment.joined) {
         globalThis.goOnRehydrate(attachment.wsId, attachment.peerId, attachment.publicKey || "", attachment.address || "", JSON.stringify(attachment.routes || []), JSON.stringify(attachment.metadata || {}));
+      }
+      // Rehydrate TURN allocations persisted before hibernation.
+      if (attachment.isTurn && attachment.turnAlloc) {
+        globalThis.goOnTURNRehydrate(attachment.wsId, JSON.stringify(attachment.turnAlloc));
       }
     }
     this.nextWsId = maxWsId;

@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-18 (session 27)
+Last updated: 2026-02-18 (session 28)
 
 ## Current Phase
 
@@ -121,6 +121,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.15.1 | 2026-02-18 | Fix Android reconnection: defer ICE restart until signaling reconnects (was silently dropping restart offers). TURN allocation hibernation persistence. |
 | v1.15.0 | 2026-02-18 | Fix 9 bugs: ICE candidate buffering, orphaned PeerConnection leak, cleanup order, ICE restart candidate race, 0.0.0.0/0 AllowedIPs security fix, infinite 401 retry, tokenMu data race, fragile 401 detection, jwtRefreshLoop ignores cancellation. Integration test suite (16 tests). Docker e2e tests. |
 | v1.14.0 | 2026-02-17 | `bamgate logs` command — view service logs without knowing platform-specific tools |
 | v1.13.1 | 2026-02-17 | Fix JWT expiry after suspend/resume, fix reconnect backoff overflow (45k request storm), fix ICE restart glare after sleep |
