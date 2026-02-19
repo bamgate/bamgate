@@ -12,6 +12,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"golang.zx2c4.com/wireguard/tun"
 
+	"github.com/kuuji/bamgate/internal/auth"
 	"github.com/kuuji/bamgate/internal/bridge"
 	"github.com/kuuji/bamgate/internal/config"
 	"github.com/kuuji/bamgate/internal/control"
@@ -31,6 +33,12 @@ import (
 	rtcpkg "github.com/kuuji/bamgate/internal/webrtc"
 	"github.com/kuuji/bamgate/pkg/protocol"
 )
+
+// ErrDeviceRevoked is returned by Run() when the device has been revoked
+// or its refresh token has expired. This is a permanent error — the agent
+// should exit cleanly and the service manager should NOT restart it.
+// The user must re-register with "bamgate setup".
+var ErrDeviceRevoked = auth.ErrDeviceRevoked
 
 // SocketProtector is called to protect a socket file descriptor from VPN
 // routing. On Android, this maps to VpnService.protect(fd) which exempts
@@ -304,8 +312,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Perform initial JWT refresh if OAuth credentials are configured.
 	if a.cfg.Network.DeviceID != "" && a.cfg.Network.RefreshToken != "" {
 		if err := a.refreshJWT(ctx); err != nil {
+			// Propagate ErrDeviceRevoked so the caller can exit cleanly
+			// instead of letting systemd restart us in a loop.
 			return fmt.Errorf("initial token refresh: %w", err)
 		}
+		// NOTE: ErrDeviceRevoked is wrapped inside the error chain via
+		// %w, so callers can use errors.Is(err, auth.ErrDeviceRevoked).
 		// Start background JWT refresh loop (~50 min interval).
 		go a.jwtRefreshLoop(ctx)
 	}
@@ -323,7 +335,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		TokenProvider: a.tokenProvider,
 		Logger:        a.log,
 		Reconnect: signaling.ReconnectConfig{
-			Enabled: true,
+			Enabled:     true,
+			MaxAttempts: 20,
 		},
 	}
 	if a.cfg.Network.DeviceID != "" && a.cfg.Network.RefreshToken != "" {
@@ -1545,7 +1558,7 @@ func (a *Agent) refreshJWT(ctx context.Context) error {
 }
 
 // jwtRefreshLoop periodically refreshes the JWT before it expires.
-// It runs until the context is cancelled.
+// It runs until the context is cancelled or a permanent auth error occurs.
 func (a *Agent) jwtRefreshLoop(ctx context.Context) {
 	// Refresh at 50 minutes (JWT lifetime is 60 minutes).
 	ticker := time.NewTicker(50 * time.Minute)
@@ -1557,6 +1570,10 @@ func (a *Agent) jwtRefreshLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := a.refreshJWT(ctx); err != nil {
+				if errors.Is(err, auth.ErrDeviceRevoked) {
+					a.log.Error("device is revoked, stopping JWT refresh loop", "error", err)
+					return
+				}
 				a.log.Error("background JWT refresh failed", "error", err)
 				// Try again sooner on failure, but respect cancellation.
 				select {
@@ -1565,6 +1582,10 @@ func (a *Agent) jwtRefreshLoop(ctx context.Context) {
 				case <-time.After(30 * time.Second):
 				}
 				if err := a.refreshJWT(ctx); err != nil {
+					if errors.Is(err, auth.ErrDeviceRevoked) {
+						a.log.Error("device is revoked, stopping JWT refresh loop", "error", err)
+						return
+					}
 					a.log.Error("JWT refresh retry failed", "error", err)
 				}
 			}

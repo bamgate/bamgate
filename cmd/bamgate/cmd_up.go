@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kuuji/bamgate/internal/agent"
+	"github.com/kuuji/bamgate/internal/auth"
 	"github.com/kuuji/bamgate/internal/config"
 )
 
@@ -83,6 +85,14 @@ func runUp(cmd *cobra.Command, args []string) error {
 		if ctx.Err() != nil {
 			// Context was cancelled (signal received) — clean shutdown.
 			globalLogger.Info("bamgate stopped")
+			return nil
+		}
+		// Device revoked or refresh token expired — this is permanent.
+		// Exit cleanly (return nil) so systemd's Restart=on-failure does
+		// NOT restart us. Retrying will never succeed.
+		if errors.Is(err, auth.ErrDeviceRevoked) {
+			globalLogger.Error("device has been revoked or refresh token expired — agent will not restart")
+			fmt.Fprintln(os.Stderr, "\nThis device has been revoked. Run 'bamgate setup' to re-register.")
 			return nil
 		}
 		// Provide actionable guidance for TUN permission errors.

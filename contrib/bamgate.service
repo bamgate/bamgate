@@ -14,7 +14,12 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/bin/bamgate up
 Restart=on-failure
-RestartSec=5
+RestartSec=10
+
+# Stop restarting if the service fails 5 times within 5 minutes.
+# Prevents runaway restart loops (e.g. revoked device hammering the server).
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 # Runtime directory for the control socket.
 RuntimeDirectory=bamgate

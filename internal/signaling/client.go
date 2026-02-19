@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/kuuji/bamgate/internal/auth"
 	"github.com/kuuji/bamgate/pkg/protocol"
 )
 
@@ -450,6 +451,12 @@ func (c *Client) reconnect(ctx context.Context) bool {
 					"refresh_attempt", authRefreshes, "max", maxAuthRefreshes)
 				if refreshErr := c.cfg.OnAuthFailure(); refreshErr != nil {
 					c.log.Error("credential refresh failed", "error", refreshErr)
+					// If the device is permanently revoked, stop immediately.
+					// Retrying will never succeed.
+					if errors.Is(refreshErr, auth.ErrDeviceRevoked) {
+						c.log.Error("device is revoked, giving up reconnection")
+						return false
+					}
 				} else {
 					c.log.Info("credentials refreshed, retrying immediately")
 					// Reset backoff: next iteration uses attempt=1 timing.

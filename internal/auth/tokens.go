@@ -4,11 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// ErrDeviceRevoked is returned when the server permanently rejects
+// authentication because the device has been revoked or its refresh
+// token has expired. This is not a transient error — retrying will
+// never succeed. The caller should stop retrying and inform the user
+// to re-register with "bamgate setup".
+var ErrDeviceRevoked = errors.New("device revoked or refresh token expired")
 
 // RegisterResponse is the response from POST /auth/register.
 type RegisterResponse struct {
@@ -67,6 +76,26 @@ func Register(ctx context.Context, serverURL, githubToken, deviceName string) (*
 	}
 
 	return &result, nil
+}
+
+// permanentAuthErrors are server error messages that indicate the device
+// can never authenticate again. These match the error strings returned by
+// the Cloudflare Worker's /auth/refresh endpoint.
+var permanentAuthErrors = []string{
+	"device not found or revoked",
+	"refresh_token_expired",
+}
+
+// isPermanentAuthError checks if the server error message indicates a
+// permanent authentication failure that will never succeed on retry.
+func isPermanentAuthError(serverError string) bool {
+	lower := strings.ToLower(serverError)
+	for _, pe := range permanentAuthErrors {
+		if strings.Contains(lower, pe) {
+			return true
+		}
+	}
+	return false
 }
 
 // Device represents a single device in the list response.
@@ -199,6 +228,10 @@ func Refresh(ctx context.Context, serverURL, deviceID, refreshToken string) (*Re
 			Error string `json:"error"`
 		}
 		if json.Unmarshal(respBody, &errResp) == nil && errResp.Error != "" {
+			// Detect permanent auth failures that will never succeed on retry.
+			if isPermanentAuthError(errResp.Error) {
+				return nil, fmt.Errorf("token refresh failed: %s: %w", errResp.Error, ErrDeviceRevoked)
+			}
 			return nil, fmt.Errorf("token refresh failed: %s", errResp.Error)
 		}
 		return nil, fmt.Errorf("token refresh failed: HTTP %d", resp.StatusCode)
