@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/kuuji/bamgate/internal/auth"
 	"github.com/kuuji/bamgate/internal/config"
 	"github.com/kuuji/bamgate/internal/deploy"
+	"github.com/kuuji/bamgate/internal/tunnel"
 )
 
 var setupForce bool
@@ -28,10 +30,15 @@ var setupCmd = &cobra.Command{
 
   1. Authenticate with GitHub (Device Authorization Grant)
   2. Deploy the signaling worker to Cloudflare (new network) or join an existing one
-  3. Configure this device (name, WireGuard keys, tunnel address)
-  4. Install a system service (systemd on Linux, launchd on macOS)
+  3. Configure this device (name, WireGuard keys, tunnel address, routes)
+  4. Install and start a system service (systemd on Linux, launchd on macOS)
 
-This command must be run as root:
+If bamgate is already configured, setup checks your credentials and
+re-authenticates with GitHub only if they have expired. This does not
+require root. Use --force to redo the full setup wizard from scratch
+(requires root).
+
+First-time setup must be run as root:
   sudo bamgate setup`,
 	RunE: runSetup,
 }
@@ -45,31 +52,33 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("setup is only supported on Linux and macOS")
 	}
 
-	if os.Getuid() != 0 {
-		return fmt.Errorf("setup must be run as root (try: sudo bamgate setup)")
-	}
-
 	cfgPath := resolvedConfigPath()
+	isRoot := os.Getuid() == 0
 
-	// Check for legacy config and migrate if needed.
-	if err := migrateConfig(cfgPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: config migration check failed: %v\n", err)
-	}
-
-	// Migrate from monolithic config.toml to split config.toml + secrets.toml.
-	if err := config.MigrateConfigSplit(cfgPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: config split migration failed: %v\n", err)
-	}
-
-	// Fix directory and file permissions for the split config model.
-	if err := config.FixPermissions(cfgPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: fixing config permissions failed: %v\n", err)
+	// Root-only housekeeping: migrations and permission fixes.
+	if isRoot {
+		if err := migrateConfig(cfgPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: config migration check failed: %v\n", err)
+		}
+		if err := config.MigrateConfigSplit(cfgPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: config split migration failed: %v\n", err)
+		}
+		if err := config.FixPermissions(cfgPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: fixing config permissions failed: %v\n", err)
+		}
 	}
 
 	// Check for existing config.
 	existingCfg, _ := config.LoadConfig(cfgPath)
 	if existingCfg != nil && !setupForce {
-		return runSetupExisting(cfgPath)
+		// Re-auth path works without root — config files are group-writable.
+		return runSetupExisting(cfgPath, existingCfg)
+	}
+
+	// Full setup and --force require root (creates /etc/bamgate, writes
+	// service files, etc.).
+	if !isRoot {
+		return fmt.Errorf("setup must be run as root (try: sudo bamgate setup)")
 	}
 
 	if existingCfg != nil && setupForce {
@@ -138,27 +147,124 @@ func legacyConfigPath() (string, error) {
 }
 
 // runSetupExisting handles the case where bamgate is already configured.
-func runSetupExisting(cfgPath string) error {
+// It checks whether the existing credentials are still valid and only
+// triggers GitHub re-authentication if they are not.
+func runSetupExisting(cfgPath string, cfg *config.Config) error {
 	fmt.Fprintf(os.Stderr, "bamgate is already configured: %s\n\n", cfgPath)
 
-	if runtime.GOOS == "linux" {
-		if _, err := os.Stat(systemdServicePath); err == nil {
-			fmt.Fprintf(os.Stderr, "Updating systemd service...\n")
-			if err := installSystemdService(); err != nil {
-				return fmt.Errorf("updating systemd service: %w", err)
+	ctx := context.Background()
+
+	// --- Check credentials ---
+	needsReauth := false
+
+	if cfg.Network.ServerURL == "" || cfg.Network.DeviceID == "" || cfg.Network.RefreshToken == "" {
+		fmt.Fprintf(os.Stderr, "Credentials are incomplete — re-authentication required.\n\n")
+		needsReauth = true
+	}
+
+	if !needsReauth {
+		fmt.Fprintf(os.Stderr, "Checking credentials...\n")
+		baseURL := httpBaseURL(cfg.Network.ServerURL)
+
+		refreshResp, err := auth.Refresh(ctx, baseURL, cfg.Network.DeviceID, cfg.Network.RefreshToken)
+		if err != nil {
+			if errors.Is(err, auth.ErrDeviceRevoked) {
+				fmt.Fprintf(os.Stderr, "  Credentials expired or device revoked — re-authentication required.\n\n")
+				needsReauth = true
+			} else {
+				// Network error or transient failure — tokens may still be valid.
+				fmt.Fprintf(os.Stderr, "  Could not reach server: %v\n", err)
+				fmt.Fprintf(os.Stderr, "  Credentials may still be valid. Skipping re-authentication.\n\n")
+			}
+		} else {
+			// Refresh succeeded — save the rotated tokens.
+			cfg.Network.RefreshToken = refreshResp.RefreshToken
+			if err := config.SaveConfig(cfgPath, cfg); err != nil {
+				return fmt.Errorf("saving refreshed config: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "  Credentials are valid.\n\n")
+		}
+	}
+
+	if needsReauth {
+		if err := reauthenticateDevice(ctx, cfgPath, cfg); err != nil {
+			return err
+		}
+	}
+
+	// --- Update system service and restart daemon (root only) ---
+	if os.Getuid() == 0 {
+		if runtime.GOOS == "linux" {
+			if _, err := os.Stat(systemdServicePath); err == nil {
+				fmt.Fprintf(os.Stderr, "Updating systemd service...\n")
+				if err := installSystemdService(); err != nil {
+					return fmt.Errorf("updating systemd service: %w", err)
+				}
+			}
+		} else if runtime.GOOS == "darwin" {
+			if _, err := os.Stat(launchdPlistPath); err == nil {
+				fmt.Fprintf(os.Stderr, "Updating launchd service...\n")
+				if err := installLaunchdService(); err != nil {
+					return fmt.Errorf("updating launchd service: %w", err)
+				}
 			}
 		}
-	} else if runtime.GOOS == "darwin" {
-		if _, err := os.Stat(launchdPlistPath); err == nil {
-			fmt.Fprintf(os.Stderr, "Updating launchd service...\n")
-			if err := installLaunchdService(); err != nil {
-				return fmt.Errorf("updating launchd service: %w", err)
-			}
+
+		if runtime.GOOS == "linux" {
+			restartSystemdIfActive()
+		} else if runtime.GOOS == "darwin" {
+			restartLaunchdIfActive()
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "\nSetup complete. Run 'sudo bamgate up' to connect.\n")
 	fmt.Fprintf(os.Stderr, "Use --force to redo full setup.\n")
+
+	return nil
+}
+
+// reauthenticateDevice performs GitHub Device Auth and re-registers this device,
+// preserving all existing config (WireGuard keys, routes, DNS, peer selections,
+// Cloudflare credentials).
+func reauthenticateDevice(ctx context.Context, cfgPath string, cfg *config.Config) error {
+	fmt.Fprintf(os.Stderr, "GitHub Authentication\n")
+	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 21))
+	fmt.Fprintf(os.Stderr, "bamgate uses your GitHub identity for authentication.\n\n")
+
+	ghResult, err := auth.DeviceAuth(ctx, func(userCode, verificationURI string) {
+		fmt.Fprintf(os.Stderr, "  1. Open %s\n", verificationURI)
+		fmt.Fprintf(os.Stderr, "  2. Enter code: %s\n\n", userCode)
+		fmt.Fprintf(os.Stderr, "Waiting for authorization...\n")
+	})
+	if err != nil {
+		return fmt.Errorf("GitHub authentication failed: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "  Authenticated with GitHub\n\n")
+
+	// Re-register the device. The server reclaims the device by name,
+	// returning fresh credentials.
+	baseURL := httpBaseURL(cfg.Network.ServerURL)
+
+	fmt.Fprintf(os.Stderr, "Re-registering device %q...\n", cfg.Device.Name)
+
+	resp, err := auth.Register(ctx, baseURL, ghResult.AccessToken, cfg.Device.Name)
+	if err != nil {
+		return fmt.Errorf("re-registering device: %w", err)
+	}
+
+	// Update only auth-related fields, preserving everything else.
+	cfg.Network.DeviceID = resp.DeviceID
+	cfg.Network.RefreshToken = resp.RefreshToken
+	cfg.Network.TURNSecret = resp.TURNSecret
+	cfg.Device.Address = resp.Address
+
+	if err := config.SaveConfig(cfgPath, cfg); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "  Device re-registered\n")
+	fmt.Fprintf(os.Stderr, "  Device ID: %s\n", resp.DeviceID)
+	fmt.Fprintf(os.Stderr, "  Tunnel address: %s\n\n", resp.Address)
 
 	return nil
 }
@@ -223,6 +329,9 @@ func runSetupFull(cfgPath string) error {
 
 	fmt.Fprintf(os.Stderr, "  WireGuard key pair generated\n")
 
+	// --- Step 3b: Route advertisement ---
+	cfg.Device.Routes = promptRouteAdvertisement(scanner, cfg.Device.Address)
+
 	// --- Step 4: Save config ---
 	if err := config.SaveConfig(cfgPath, cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)
@@ -233,25 +342,48 @@ func runSetupFull(cfgPath string) error {
 	fmt.Fprintf(os.Stderr, "\nService Installation\n")
 	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 20))
 
+	serviceInstalled := false
 	if runtime.GOOS == "linux" {
 		if promptYesNo(scanner, "Install systemd service?", true) {
 			if err := installSystemdService(); err != nil {
 				return fmt.Errorf("installing systemd service: %w", err)
 			}
+			serviceInstalled = true
 		}
 	} else if runtime.GOOS == "darwin" {
 		if promptYesNo(scanner, "Install launchd service?", true) {
 			if err := installLaunchdService(); err != nil {
 				return fmt.Errorf("installing launchd service: %w", err)
 			}
+			serviceInstalled = true
+		}
+	}
+
+	// Offer to enable and start the service immediately.
+	serviceStarted := false
+	if serviceInstalled {
+		if promptYesNo(scanner, "Enable and start bamgate now?", true) {
+			if err := enableAndStartService(); err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: %v\n", err)
+				fmt.Fprintf(os.Stderr, "  You can start manually with 'sudo bamgate up'\n")
+			} else {
+				serviceStarted = true
+			}
 		}
 	}
 
 	// --- Done ---
-	fmt.Fprintf(os.Stderr, "\nSetup complete! Run 'sudo bamgate up' to connect.\n")
+	fmt.Fprintf(os.Stderr, "\nSetup complete!\n")
 	fmt.Fprintf(os.Stderr, "  Public key: %s\n", pubKey.String())
 	fmt.Fprintf(os.Stderr, "  Tunnel address: %s\n", cfg.Device.Address)
 	fmt.Fprintf(os.Stderr, "  Device ID: %s\n", cfg.Network.DeviceID)
+
+	if serviceStarted {
+		fmt.Fprintf(os.Stderr, "\nbamgate is running. Use 'bamgate status' to check connectivity.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "\nRun 'sudo bamgate up' to connect.\n")
+	}
+
 	fmt.Fprintf(os.Stderr, "\nTo add another device, run 'sudo bamgate setup' on it\n")
 	fmt.Fprintf(os.Stderr, "and authenticate with the same GitHub account.\n")
 
@@ -446,6 +578,83 @@ func registerDevice(ctx context.Context, scanner *bufio.Scanner, serverURL, gith
 	}
 
 	return cfg, nil
+}
+
+// enableAndStartService enables and starts the bamgate system service.
+func enableAndStartService() error {
+	if runtime.GOOS == "linux" {
+		cmd := exec.Command("systemctl", "enable", "--now", "bamgate")
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("systemctl enable --now bamgate: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "  systemd service enabled and started\n")
+		return nil
+	}
+
+	if runtime.GOOS == "darwin" {
+		cmd := exec.Command("launchctl", "load", "-w", launchdPlistPath)
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("launchctl load: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "  launchd service loaded and started\n")
+		return nil
+	}
+
+	return nil
+}
+
+// promptRouteAdvertisement discovers local subnets and asks the user which
+// ones to advertise to peers. Returns nil if no routes are selected.
+func promptRouteAdvertisement(scanner *bufio.Scanner, tunnelAddress string) []string {
+	subnets, err := tunnel.DiscoverLocalSubnets(tunnelAddress)
+	if err != nil || len(subnets) == 0 {
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "\nRoute Advertisement\n")
+	fmt.Fprintf(os.Stderr, "%s\n", strings.Repeat("-", 19))
+	fmt.Fprintf(os.Stderr, "Share local networks with peers? This lets remote devices\n")
+	fmt.Fprintf(os.Stderr, "reach machines on your LAN through the VPN tunnel.\n\n")
+	fmt.Fprintf(os.Stderr, "Detected networks:\n")
+
+	for i, s := range subnets {
+		fmt.Fprintf(os.Stderr, "  %d. %s (%s)\n", i+1, s.CIDR, s.Interface)
+	}
+
+	fmt.Fprintf(os.Stderr, "\nAdvertise (comma-separated numbers, or Enter to skip): ")
+
+	if !scanner.Scan() {
+		return nil
+	}
+
+	input := strings.TrimSpace(scanner.Text())
+	if input == "" {
+		return nil
+	}
+
+	var selected []string
+	for _, part := range strings.Split(input, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		idx := 0
+		if _, err := fmt.Sscanf(part, "%d", &idx); err != nil || idx < 1 || idx > len(subnets) {
+			fmt.Fprintf(os.Stderr, "  Skipping invalid selection: %s\n", part)
+			continue
+		}
+		selected = append(selected, subnets[idx-1].CIDR)
+	}
+
+	if len(selected) > 0 {
+		fmt.Fprintf(os.Stderr, "  Will advertise: %s\n", strings.Join(selected, ", "))
+	}
+
+	return selected
 }
 
 // installSystemdService writes the systemd service file for bamgate.

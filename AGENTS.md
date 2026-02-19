@@ -382,20 +382,6 @@ hub (bamgate-hub :8080)     — signaling relay, no special caps
 Fedora/RHEL. If you see "permission denied" on config files, ensure the `:z`
 label is present in the compose file.
 
-### Known Bugs Found by Tests
-
-These were discovered during test development and documented for future fixing:
-
-1. **`worker/turn.go:129`** — TURN relay address overflow at >255 allocations
-   (`byte(nextRelayHost)` wraps around).
-2. **`agent.go` `tokenMu` race** — `a.cfg.Network.RefreshToken` mutated without
-   holding `tokenMu` in some paths.
-3. **`client.go:409-420`** — Infinite retry possible: 401 → refresh succeeds but
-   server still returns 401.
-4. **`agent.go:768`** — Peers without an address get `0.0.0.0/0` routing (security issue).
-5. **`jwtRefreshLoop`** — `time.Sleep(30s)` ignores context cancellation.
-6. **`client.go:345`** — Fragile 401 detection via string matching on error message.
-
 ## Signaling Protocol
 
 JSON over WebSocket with a `"type"` discriminator field. Message types:

@@ -1,6 +1,6 @@
 # bamgate — Project Status
 
-Last updated: 2026-02-18 (session 29)
+Last updated: 2026-02-18 (session 30)
 
 ## Current Phase
 
@@ -28,7 +28,7 @@ See ARCHITECTURE.md §Implementation Plan for the full 7-phase roadmap.
 | WireGuard TUN + device | `internal/tunnel/` | TUN creation, UAPI config, device lifecycle, custom Bind |
 | Bridge (TUN <-> WebRTC) | `internal/bridge/` | Custom `conn.Bind` routing packets over data channels |
 | Agent orchestrator | `internal/agent/` | Peer lifecycle, ICE restart (3 retries), NAT/forwarding, watchdog |
-| CLI (Cobra) | `cmd/bamgate/` | `setup`, `login`, `up`, `down`, `restart`, `devices`, `worker` (install/update/uninstall/info), `status`, `logs`, `genkey`, `update`, `uninstall` |
+| CLI (Cobra) | `cmd/bamgate/` | `setup`, `up`, `down`, `restart`, `devices`, `worker` (install/update/uninstall/info), `status`, `logs`, `genkey`, `update`, `uninstall` |
 | Standalone hub | `cmd/bamgate-hub/` | Lightweight signaling server for LAN testing |
 | Control server | `internal/control/` | Unix socket JSON status API, smart path resolution |
 | Subnet routing | config + protocol + agent | `[device] routes`, propagated via signaling, AllowedIPs per peer |
@@ -81,7 +81,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Package | Files | Status |
 |---------|-------|--------|
-| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_restart.go, cmd_setup.go, cmd_login.go, cmd_worker.go, cmd_devices.go, cmd_qr.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_logs.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go, exec_unix.go, exec_windows.go | **Implemented + tested** — Cobra subcommands: setup (GitHub OAuth), login, up, down, restart, worker (install/update/uninstall/info), devices (list/configure/revoke), qr, status, logs, genkey, update, uninstall |
+| `cmd/bamgate` | main.go, cmd_up.go, cmd_down.go, cmd_restart.go, cmd_setup.go, cmd_worker.go, cmd_devices.go, cmd_qr.go, cmd_helpers.go, cmd_helpers_test.go, cmd_status.go, cmd_logs.go, cmd_genkey.go, cmd_update.go, cmd_uninstall.go, exec_unix.go, exec_windows.go | **Implemented + tested** — Cobra subcommands: setup (GitHub OAuth + credential check + re-auth + route discovery), up, down, restart, worker (install/update/uninstall/info), devices (list/configure/revoke), qr, status, logs, genkey, update, uninstall |
 | `cmd/bamgate-hub` | main.go | **Implemented** — standalone signaling server |
 | `internal/agent` | agent.go, deps.go, agent_test.go, agent_integration_test.go, fake_test.go, protectednet.go, protectednet_android.go, protectednet_ifaces.go | **Implemented + tested** — orchestrator with ICE restart, subnet routing, forwarding/NAT, control server, TURN relay integration, Android socket protection, JWT refresh loop. 16 integration tests (fake TUN/WG + real signaling + real WebRTC). Docker e2e tests in `test/e2e/` |
 | `internal/auth` | github.go, tokens.go | **Implemented** — GitHub Device Auth flow (RFC 8628), register/refresh/list/revoke API client |
@@ -90,7 +90,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 | `internal/config` | config.go, keys.go, config_test.go, keys_test.go | **Implemented + tested** — Split config.toml (0644) + secrets.toml (0640) for non-root CLI access |
 | `internal/signaling` | client.go, hub.go, client_test.go | **Implemented + tested** |
 | `pkg/protocol` | protocol.go, protocol_test.go | **Implemented + tested** |
-| `internal/tunnel` | config.go, device.go, tun.go, tun_linux.go, tun_darwin.go, tun_android.go, iface.go, netlink.go, netlink_darwin.go, netlink_android.go, nat.go, nat_darwin.go, nat_android.go, config_test.go, netlink_test.go | **Implemented + tested** — Cross-platform: Linux (netlink + nftables), macOS (ifconfig/route/pfctl), Android (VpnService FD, no-op stubs) |
+| `internal/tunnel` | config.go, device.go, tun.go, tun_linux.go, tun_darwin.go, tun_android.go, iface.go, iface_test.go, netlink.go, netlink_darwin.go, netlink_android.go, nat.go, nat_darwin.go, nat_android.go, config_test.go, netlink_test.go | **Implemented + tested** — Cross-platform: Linux (netlink + nftables), macOS (ifconfig/route/pfctl), Android (VpnService FD, no-op stubs). Subnet discovery for route suggestions. |
 | `internal/turn` | credentials.go, credentials_test.go, dialer.go, dialer_test.go | **Implemented + tested** |
 | `internal/webrtc` | ice.go, datachan.go, peer.go, peer_test.go | **Implemented + tested** |
 | `internal/deploy` | cloudflare.go, assets.go, assets/ | **Implemented** — Cloudflare API client, embedded worker assets |
@@ -121,6 +121,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| v1.16.0 | 2026-02-18 | Smoother setup: re-running `setup` checks credentials and only re-auths if expired (no root needed), route discovery suggests local subnets to advertise, auto-start service after install, `login` command removed (folded into `setup`). |
 | v1.15.6 | 2026-02-18 | Fix Cloudflare quota exhaustion from revoked clients: detect permanent auth failures (device revoked, refresh token expired) and exit cleanly so systemd doesn't restart. Cap signaling reconnect at 20 attempts. Add systemd StartLimitBurst=5/StartLimitIntervalSec=300 safety net. |
 | v1.15.5 | 2026-02-18 | Fix connection flapping: skip teardown when ICE is new/checking (offer in flight), tear down for connected/disconnected/failed/closed. v1.15.4 was too aggressive — tearing down in-progress connections caused repeated join/leave loops. |
 | v1.15.4 | 2026-02-18 | Fix reconnection after network switch: always tear down existing connection when peer re-joins (hub notification = new PC on remote side). Removes fragile DC state check that missed dead SCTP associations. |
@@ -167,6 +168,7 @@ See [docs/testing-lan.md](docs/testing-lan.md) for the LAN testing guide.
 
 | Session | Date | Summary |
 |---------|------|---------|
+| 30 | 2026-02-18 | Smoother setup experience. **Re-running `setup` is now useful:** checks credentials via `auth.Refresh()`, saves rotated tokens if valid, triggers GitHub re-auth + re-register only if expired/revoked — no root required for the re-auth path. **Route discovery during setup:** new `DiscoverLocalSubnets()` in `internal/tunnel/iface.go` enumerates host interfaces, filters out loopback/link-local/virtual (docker, veth, br-, virbr, wg, tun, tailscale, etc.), presents detected subnets as numbered list for user to select. **Auto-start service:** after installing systemd/launchd service, prompts to `enable --now` immediately. **Removed `login` command:** folded into `setup` (credential check + conditional re-auth). Tests: `TestShouldSkipInterface` (15 interface types), `TestDiscoverLocalSubnets_*` (exclude, dedup, no-loopback). |
 | 29 | 2026-02-18 | Fix Cloudflare quota exhaustion caused by revoked clients in infinite retry loops. **Root cause:** revoked devices running v1.13.0 (pre-backoff-overflow fix) hammered the worker with 100k+ requests/day — `math.Pow(2, N)` overflow caused zero-delay retries, and systemd `Restart=on-failure` with `RestartSec=5` restarted the agent every 5s on auth failure. **Four-layer fix:** (1) `auth.ErrDeviceRevoked` sentinel error — `Refresh()` detects "device not found or revoked" and "refresh_token_expired" from the worker and wraps them as permanent errors; (2) Agent propagates `ErrDeviceRevoked` from initial `refreshJWT()` and `jwtRefreshLoop`, signaling `reconnect()` gives up immediately on permanent auth failure; (3) `cmd_up.go` exits with code 0 on `ErrDeviceRevoked` so `Restart=on-failure` doesn't trigger, prints "Run bamgate setup to re-register"; (4) Signaling reconnect capped at `MaxAttempts=20`; (5) Systemd service hardened with `StartLimitBurst=5`/`StartLimitIntervalSec=300` and `RestartSec=10`. |
 | 28 | 2026-02-18 | Fix Android reconnection after network switch (wifi↔mobile). **Three bugs found and fixed across v1.15.3–v1.15.5:** (1) Zombie peers after signaling reconnect — closed PeerConnections left in peers map caused `InvalidStateError` on incoming offers and endless WG pipe errors. Fix: `handlePeers` cleans up closed PCs and `needsRestart` peers; `handleOffer` detects closed PCs; deduplicate peers list. (2) Home peers kept stale connections when phone re-joined — ICE showed connected but SCTP was dead (phone had new PC). Fix: `initiateConnection` tears down existing connected/disconnected/failed/closed connections when peer re-joins. (3) Connection flapping — v1.15.4 teardown was too aggressive, destroying in-progress connections (new/checking) and causing join/leave loops. Fix: skip teardown for new/checking states. **Verified working on real devices:** phone switches wifi↔mobile, VPN recovers with traffic flowing including pushed routes. |
 | 27 | 2026-02-18 | Fix 9 connection/auth bugs, add integration test suite (16 tests) + Docker e2e tests. **WebRTC bugs:** (1) ICE candidates arriving before SetRemoteDescription silently dropped — buffer in peerState, flush after SDP set; (2) createRTCPeer overwrites existing rtcPeer without closing — capture old peer under lock, close outside; (3) removePeer cleanup order — WG peer first, then bridge, then PC; (4) ICE restart candidates dropped due to ufrag mismatch race — use full ICE gathering (not trickle) for restart offers/answers via GatheringCompletePromise. **Auth/config bugs:** (5) peers without address get 0.0.0.0/0 AllowedIPs (security) — reject peers with no valid address; (6) infinite 401→refresh→retry loop — cap at 3 consecutive auth refreshes; (7) tokenMu race on RefreshToken — protect both jwtToken and RefreshToken under tokenMu; (8) fragile 401 detection via string matching — typed httpStatusError + errors.As; (9) jwtRefreshLoop time.Sleep ignores context — use select. **Test infrastructure:** dependency injection via Deps struct (8 interfaces), fake test doubles, 16 integration tests with real signaling + real WebRTC, Docker e2e (3-peer mesh with real TUN + WireGuard), `make e2e` target |

@@ -8,7 +8,28 @@ priority list.
 
 - **CI workflow on push/PR** — `go test -race`, `golangci-lint`, `go vet` in `.github/workflows/ci.yml`
 - **Agent tests** — peer lifecycle, ICE restart logic, route acceptance, forwarding watchdog (`internal/agent/agent_test.go`)
-- **Split agent.go** — extract `peer.go`, `routes.go`, `watchdog.go` from the 1,249-line god file
+- **Refactor agent.go** — the file is ~1,867 lines with 21 struct fields, 38
+  methods, 68 mutex lock/unlock sites, and 17+ distinct responsibilities. Key
+  refactoring steps:
+  1. **Extract `peerManager` type** — move the `peers` map, `mu` mutex, and all
+     ~15 methods that operate on peer state (`handlePeers`, `handleOffer`,
+     `handleAnswer`, `handleICECandidate`, `flushPendingCandidates`,
+     `initiateConnection`, `createRTCPeer`, `onDataChannelOpen`, `removePeer`,
+     `handleICEStateChange`, `attemptICERestart`, etc.) into a dedicated type.
+     This would cut agent.go roughly in half and reduce the Agent struct to ~12
+     fields.
+  2. **Introduce explicit `peerPhase` enum** — replace the implicit state machine
+     (currently deduced from ~6 boolean/nullable fields: `rtcPeer != nil`,
+     `pendingRestart`, `needsRestart`, `restartTimer != nil`, `iceRestarts`,
+     ICE connection state) with an explicit enum: `Skeleton | Connecting |
+     Connected | DisconnectedGrace | Restarting | NeedsRebuild`. Makes the ~12
+     state transitions self-documenting and simplifies guard conditions.
+  3. **Split `handleOffer()`** — at 126 lines with 7 critical sections, extract
+     `detectZombiePeer()`, `resolveOfferGlare()`, `applyOfferSDP()`.
+  4. **Extract `forwardingManager` type** — lines 1624-1848 (224 lines, 5
+     methods, 3 fields) deal exclusively with IP forwarding, NAT masquerade,
+     and the forwarding watchdog. Move to a self-contained type with
+     `Start()`/`Stop()` methods.
 - **Checksum verification in install.sh** — download `checksums.txt` from release, verify tarball SHA256 before installing
 - **Data path benchmarks** — `Benchmark*` tests for bridge send/receive, STUN parse/build, UAPI config generation
 - **Pin linter config** — `.golangci.yml` with explicit linter list, timeout, exclusions
@@ -197,5 +218,80 @@ New file `cmd/bamgate/cmd_logs.go`, registered in `main.go`.
   (e.g., "bamgate service hasn't been set up yet — run `sudo bamgate setup`")
 - On unsupported platforms, print a helpful message pointing to the right location
 - No control socket changes, no new dependencies — one new file, one line in `main.go`
+
+### Rewrite Cloudflare Worker in TypeScript (drop Go/Wasm)
+
+The worker is currently split across Go/Wasm (hub + TURN relay + custom STUN
+parser) and JavaScript (auth, JWT, SQLite, WebSocket lifecycle, Wasm bridge).
+This split introduces significant accidental complexity without a proportional
+benefit.
+
+**Problem:** The Go/Wasm code handles only signaling routing (207 lines) and
+TURN relay (713 lines) — purely reactive data processing. All interesting
+platform work (auth, storage, crypto, WebSocket lifecycle) must stay in JS
+because of Cloudflare platform API constraints (`ctx.storage.sql`, `crypto.subtle`,
+WebSocket Hibernation API, `Response` constructor). The result is a 10-function
+JS<->Wasm bridge, a TinyGo build dependency, a custom STUN parser (631 lines)
+because pion/stun doesn't compile under TinyGo, and `worker.mjs` at 893 lines
+mixing 5+ concerns with no tests. The shared-types benefit (`pkg/protocol/`) is
+not realized — the worker does its own inline JSON parsing.
+
+**Proposal:** Rewrite the entire worker in TypeScript, eliminating Wasm.
+
+**What we eliminate:**
+- TinyGo as a build dependency (+ wasm-opt, custom wasm_exec.js)
+- The 571 KB app.wasm binary
+- The 10-function JS<->Wasm bridge
+- `worker/main.go` (Wasm glue)
+- `worker/go.mod` (separate Go module)
+- The constraint of no goroutines / limited stdlib in TinyGo Wasm
+
+**What we gain:**
+- Direct access to all CF APIs — no indirection or bridge
+- `async/await` for Web Crypto (currently blocked from Go by Promise handling)
+- Testable with Vitest + Miniflare (Cloudflare's local testing framework)
+- Wrangler's built-in TypeScript support (zero config)
+- Type checking on CF API surface via `@cloudflare/workers-types`
+- Fewer total lines: estimated ~1,500 TS vs ~3,000 current (893 JS + 920 Go +
+  631 STUN parser + 45 glue + 518 STUN tests)
+
+**Estimated TypeScript structure:**
+
+| File | Lines (est.) | Purpose |
+|------|-------------|---------|
+| `src/worker.ts` | ~150 | Fetch handler, DO class, WebSocket lifecycle |
+| `src/auth.ts` | ~300 | Register, refresh, JWT sign/verify, device management |
+| `src/hub.ts` | ~150 | Peer registry, signaling message routing |
+| `src/turn.ts` | ~500 | TURN relay: allocations, permissions, channels, forwarding |
+| `src/stun.ts` | ~450 | STUN/TURN message parser/builder (DataView/Uint8Array) |
+| `src/types.ts` | ~50 | Shared types (signaling messages, peer info) |
+| Tests | ~600 | Vitest + Miniflare |
+
+**Migration plan (incremental):**
+1. Set up TypeScript + Vitest + Miniflare toolchain alongside existing worker
+2. Port `stun/stun.go` to `src/stun.ts` — pure data transformation, easy to
+   test in isolation, validates the approach
+3. Port `hub.go` to `src/hub.ts` — simplest Go file, mostly map operations
+4. Port `turn.go` to `src/turn.ts` — most complex piece, but well-specified
+5. Split `worker.mjs` into `src/worker.ts` + `src/auth.ts`, converting to TS
+6. Remove Go/Wasm: `worker/main.go`, `worker/hub.go`, `worker/turn.go`,
+   `worker/stun/`, `worker/go.mod`, `wasm_exec.js`, build targets
+7. Update `internal/deploy/assets/` embedded files and deployment logic
+8. Fix the TURN relay address overflow bug (turn.go:139) during the port —
+   `byte(nextRelayHost)` wraps at >255 allocations
+
+**What we lose:**
+- "One language" across client and server (mitigated: TypeScript is not a big
+  leap from Go for someone comfortable with static types)
+- Shared `pkg/protocol/` types (mitigated: not actually shared today, and the
+  protocol is 6 stable message types)
+- The Wasm learning goal (but the current setup is mostly "JS with extra steps"
+  — the Wasm boundary adds complexity without enabling meaningful Wasm learning)
+
+**Known bugs fixed by the rewrite:**
+- `worker/turn.go:139` — relay address overflow at >255 allocations (fix during
+  port by using proper bounds checking or wider address space)
+- `worker.mjs` O(n) WebSocket lookup via `_findWebSocket` (replace with a
+  `Map<wsId, WebSocket>` in the TS rewrite)
 
 <!-- Add new feature ideas here -->
