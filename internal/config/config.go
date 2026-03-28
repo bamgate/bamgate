@@ -428,24 +428,65 @@ func applyUserOwnership(path string) {
 }
 
 // writeFile encodes v as TOML and writes it to path with the given file mode.
-// If the file already exists with different permissions (e.g. during migration
-// from the old monolithic 0600 format), the permissions are corrected.
+// The write is atomic: content is written to a temporary file in the same
+// directory and then renamed over the target. This ensures that a crash or
+// kill signal between write and rename never leaves the destination file in a
+// partial or truncated state — the reader always sees either the old complete
+// file or the new complete file, never a torn write.
+//
+// This is especially important for secrets.toml: if the daemon is killed after
+// the server has rotated the refresh token but before the file is updated, the
+// on-disk token becomes permanently invalid and the daemon cannot recover on
+// restart. Atomic rename shrinks that window to the rename syscall itself,
+// which is atomic on POSIX filesystems.
 func writeFile(path string, mode os.FileMode, v interface{}) error {
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(v); err != nil {
 		return fmt.Errorf("encoding TOML: %w", err)
 	}
 
-	if err := os.WriteFile(path, buf.Bytes(), mode); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
+	// Write to a temp file in the same directory so rename is on the same
+	// filesystem (cross-device rename is not atomic).
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".bamgate-tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file for %s: %w", path, err)
+	}
+	tmpPath := tmp.Name()
+
+	// Clean up the temp file on any failure path.
+	success := false
+	defer func() {
+		if !success {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting permissions on temp file: %w", err)
 	}
 
-	// Ensure permissions are correct even if the file already existed
-	// with different permissions (WriteFile only sets mode on creation).
-	if err := os.Chmod(path, mode); err != nil {
-		return fmt.Errorf("setting permissions on %s: %w", path, err)
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing to temp file: %w", err)
 	}
 
+	// Flush and sync before rename so the data is durable on the destination.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+
+	// Atomic replace: either the old file exists or the new one does.
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("renaming %s to %s: %w", tmpPath, path, err)
+	}
+
+	success = true
 	return nil
 }
 
