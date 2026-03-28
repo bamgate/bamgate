@@ -81,9 +81,16 @@ func Register(ctx context.Context, serverURL, githubToken, deviceName string) (*
 // permanentAuthErrors are server error messages that indicate the device
 // can never authenticate again. These match the error strings returned by
 // the Cloudflare Worker's /auth/refresh endpoint.
+//
+// "invalid refresh token" is included here because it indicates the stored
+// token no longer matches the server's record — typically caused by a crash
+// between token rotation and disk persistence. Retrying will never succeed
+// (each attempt uses the same stale on-disk token), so the daemon must exit
+// cleanly and prompt the user to re-register with "bamgate setup".
 var permanentAuthErrors = []string{
 	"device not found or revoked",
 	"refresh_token_expired",
+	"invalid refresh token",
 }
 
 // isPermanentAuthError checks if the server error message indicates a
