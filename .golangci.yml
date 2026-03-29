@@ -1,0 +1,36 @@
+version: "2"
+
+linters:
+  default: standard
+  disable:
+    - errcheck  # Too noisy for this codebase (Close, Flush, fmt.Print, etc.) — enable incrementally
+  enable:
+    - unconvert
+    - unparam
+  settings:
+    govet:
+      disable:
+        - fieldalignment  # Fix incrementally — existing structs optimized for readability
+    staticcheck:
+      checks:
+        - all
+        - "-ST1000"  # Package comments — add incrementally
+        - "-QF1003"  # Tagged switch suggestions — stylistic
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - unparam
+      # misspell: "cancelled" is intentional user-facing text
+      - linters:
+          - misspell
+        text: "`(cancelled|Cancelled|signalled)` is a misspelling"
+      # unparam: scanner param kept for API consistency in setup flow
+      - path: cmd/bamgate/cmd_setup\.go
+        linters:
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
