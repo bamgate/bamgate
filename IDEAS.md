@@ -1,14 +1,13 @@
 # bamgate — Ideas & Future Work
 
-Backlog of ideas, improvements, and future features. Roughly ordered by priority
-within each category. See STATUS.md "What's Next" for the current short-term
-priority list.
+Backlog of ideas, improvements, and future features. Items marked 🔥 are
+current priorities — see STATUS.md "What's Next" for the roadmap.
 
 ## Code Health
 
-- **CI workflow on push/PR** — `go test -race`, `golangci-lint`, `go vet` in `.github/workflows/ci.yml`
+- 🔥 **CI workflow on push/PR** — `go test -race`, `golangci-lint`, `go vet` in `.github/workflows/ci.yml`. Highest ROI improvement — the repo has 16 integration tests and Docker e2e tests but nothing runs them on push/PR.
 - **Agent tests** — peer lifecycle, ICE restart logic, route acceptance, forwarding watchdog (`internal/agent/agent_test.go`)
-- **Refactor agent.go** — the file is ~1,867 lines with 21 struct fields, 38
+- 🔥 **Refactor agent.go** — the file is ~1,867 lines with 21 struct fields, 38
   methods, 68 mutex lock/unlock sites, and 17+ distinct responsibilities. Key
   refactoring steps:
   1. **Extract `peerManager` type** — move the `peers` map, `mu` mutex, and all
@@ -54,7 +53,7 @@ priority list.
 ## Infrastructure
 
 - ~~**Config file readable by non-root users**~~ — **Done.** Config split into `config.toml` (0644, non-secrets) and `secrets.toml` (0600, secrets). Commands like `bamgate qr` now work without `sudo`. Old monolithic configs are auto-migrated on first `bamgate up` or `bamgate setup`.
-- **Worker update mechanism** — There is no way to check if the deployed Cloudflare Worker is out of date or to update it after initial `bamgate setup`. We should add version tracking (embed a version string in the Worker, expose it via a `/version` endpoint) and a CLI command (`bamgate worker update` or similar) that compares the running Worker version against the version embedded in the current binary and re-deploys if needed.
+- 🔥 **Worker update mechanism** — There is no way to check if the deployed Cloudflare Worker is out of date or to update it after initial `bamgate setup`. We should add version tracking (embed a version string in the Worker, expose it via a `/version` endpoint) and a CLI command (`bamgate worker update` or similar) that compares the running Worker version against the version embedded in the current binary and re-deploys if needed.
 - Rate limiting on Worker `/connect` and `/turn` endpoints
 - End-to-end testing with systemd on a fresh machine
 - macOS end-to-end testing (`setup` -> `up` -> `status`)
@@ -219,7 +218,7 @@ New file `cmd/bamgate/cmd_logs.go`, registered in `main.go`.
 - On unsupported platforms, print a helpful message pointing to the right location
 - No control socket changes, no new dependencies — one new file, one line in `main.go`
 
-### Rewrite Cloudflare Worker in TypeScript (drop Go/Wasm)
+### 🔥 Rewrite Cloudflare Worker in TypeScript (drop Go/Wasm)
 
 The worker is currently split across Go/Wasm (hub + TURN relay + custom STUN
 parser) and JavaScript (auth, JWT, SQLite, WebSocket lifecycle, Wasm bridge).
