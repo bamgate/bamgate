@@ -25,6 +25,11 @@ linters:
         - os.Remove
         - os.Hostname
         - (*bufio.Writer).Flush
+        - (*tabwriter.Writer).Flush
+        - (*os.File).Close
+        - (*compress/gzip.Reader).Close
+        - (*nhooyr.io/websocket.Conn).Close
+        - golang.org/x/sys/unix.Close
   exclusions:
     rules:
       - path: _test\.go
@@ -35,6 +40,10 @@ linters:
       - linters:
           - misspell
         text: "`(cancelled|Cancelled|signalled)` is a misspelling"
+      # unparam: scanner param kept for API consistency in setup flow
+      - path: cmd/bamgate/cmd_setup\.go
+        linters:
+          - unparam
 
 formatters:
   enable:
