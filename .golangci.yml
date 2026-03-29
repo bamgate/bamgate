@@ -1,0 +1,41 @@
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - unparam
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  govet:
+    enable-all: true
+  staticcheck:
+    checks:
+      - all
+      - '-SA2002' # Don't flag goroutine cleanup in test teardown
+  misspell:
+    locale: US
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - unparam
+
+  # Exclude worker/ directory (TinyGo/Wasm, won't compile with standard Go)
+  exclude:
+    - path: worker/
