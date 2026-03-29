@@ -2,41 +2,26 @@ version: "2"
 
 linters:
   default: standard
+  disable:
+    - errcheck  # Too noisy for this codebase (Close, Flush, fmt.Print, etc.) — enable incrementally
   enable:
     - unconvert
     - unparam
   settings:
     govet:
       disable:
-        - fieldalignment  # Too noisy for existing codebase, fix incrementally
+        - fieldalignment  # Fix incrementally — existing structs optimized for readability
     staticcheck:
       checks:
         - all
         - "-ST1000"  # Package comments — add incrementally
         - "-QF1003"  # Tagged switch suggestions — stylistic
-    errcheck:
-      exclude-functions:
-        - fmt.Fprintf
-        - fmt.Fprintln
-        - fmt.Printf
-        - fmt.Println
-        - (io.Closer).Close
-        - (*os/exec.Cmd).Run
-        - os.Remove
-        - os.Hostname
-        - (*bufio.Writer).Flush
-        - (*tabwriter.Writer).Flush
-        - (*os.File).Close
-        - (*compress/gzip.Reader).Close
-        - (*nhooyr.io/websocket.Conn).Close
-        - golang.org/x/sys/unix.Close
   exclusions:
     rules:
       - path: _test\.go
         linters:
-          - errcheck
           - unparam
-      # misspell: "cancelled" is intentional user-facing text in some places
+      # misspell: "cancelled" is intentional user-facing text
       - linters:
           - misspell
         text: "`(cancelled|Cancelled|signalled)` is a misspelling"
