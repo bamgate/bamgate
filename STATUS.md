@@ -63,12 +63,45 @@ See [IDEAS.md](IDEAS.md) for the backlog of future work, code health improvement
 
 ## What's Next
 
-1. **Deploy and test OAuth flow end-to-end** — Redeploy the Worker with the new OAuth/JWT auth, run `bamgate setup` to register via GitHub, verify signaling and TURN relay work with JWT auth.
-2. **Deploy and test TURN relay** — Test end-to-end with phone tethering (symmetric NAT). Verify `bamgate status` shows `ice_type: relay`. TURN secret is now auto-generated in DO SQLite (no env binding needed).
-3. **macOS support — launchd integration** — `up -d`, `down`, and `install --systemd` equivalents for macOS using launchd plists.
-4. **Rate limiting** — Add request rate limiting to the Worker `/connect` and `/turn` endpoints to prevent abuse.
-5. **Android client** — Phase A+B complete. `mobile/bamgate.go` updated with `RegisterDevice` using the new auth package. Needs device testing.
-6. **End-to-end testing with systemd** — Verify the full `install --systemd` -> `up -d` -> `status` -> `down` workflow on a fresh machine.
+Prioritized roadmap — highest leverage items first.
+
+### 1. CI Pipeline (go test + lint on push/PR)
+
+The repo has 16 integration tests and Docker e2e tests but no CI workflow
+running them. One `.github/workflows/ci.yml` with `go test -race`,
+`golangci-lint`, and `go vet` stops broken code from merging. Highest ROI,
+lowest effort.
+
+### 2. TypeScript Worker Rewrite (drop TinyGo/Wasm)
+
+The Go/Wasm worker split is the biggest source of accidental complexity: a
+custom STUN parser (631 lines) because pion doesn't compile under TinyGo, a
+10-function JS↔Wasm bridge, and zero tests on the worker side. Rewriting in
+TypeScript gives Vitest + Miniflare testability, direct CF API access, fewer
+total lines (~1,500 TS vs ~3,000 current), and fixes the relay address overflow
+bug (turn.go:139) during the port. See IDEAS.md for the full migration plan.
+
+### 3. agent.go Refactor
+
+1,867 lines, 68 mutex lock/unlock sites, 17+ responsibilities. The v1.15.1–
+v1.15.5 saga (five releases in one day for reconnection bugs) is a direct
+symptom. Extract `peerManager` type, introduce explicit `peerPhase` enum, split
+`handleOffer()`, extract `forwardingManager`. See IDEAS.md for the detailed
+breakdown.
+
+### 4. Worker Version Check + Update Mechanism
+
+No way to know if the deployed Cloudflare Worker is out of date. Add a
+`/version` endpoint to the Worker, embed version in the binary, and add
+`bamgate worker check` / auto-check during `bamgate up`. Small scope, real
+operational gap.
+
+### Later
+
+- macOS launchd integration (`up -d`, `down`, `install` equivalents)
+- Android quality-of-life (always-on VPN, battery optimization prompt, per-app VPN)
+- Rate limiting on Worker `/connect` and `/turn` endpoints
+- End-to-end testing with systemd on a fresh machine
 
 ## Testing
 
