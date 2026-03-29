@@ -35,7 +35,3 @@ issues:
       linters:
         - errcheck
         - unparam
-
-  # Exclude worker/ directory (TinyGo/Wasm, won't compile with standard Go)
-  exclude:
-    - path: worker/
