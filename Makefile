@@ -5,7 +5,7 @@
 #   build-hub       Build the bamgate-hub binary
 #   build-all       Build everything (cli + hub + worker + aar)
 #   test            Run all Go tests
-#   worker          Build the Cloudflare Worker (TinyGo -> Wasm)
+#   worker          Build the Cloudflare Worker (TypeScript + esbuild)
 #   worker-assets   Copy worker build artifacts into internal/deploy/assets/
 #   worker-dev      Start wrangler dev server
 #   worker-deploy   Deploy worker to Cloudflare
@@ -18,7 +18,6 @@
 
 # Overridable variables
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-TINYGO     ?= ~/.local/tinygo/bin/tinygo
 GOMOBILE   ?= gomobile
 OUTPUT_DIR ?= .
 
@@ -54,16 +53,12 @@ test:
 e2e:
 	go test -tags e2e -v -timeout 120s ./test/e2e/
 
-# --- Worker (TinyGo -> Wasm) ---
+# --- Worker (TypeScript -> esbuild bundle) ---
 
 worker:
-	cd $(WORKER_DIR) && $(TINYGO) build -o ./build/app.wasm -target wasm -no-debug .
-	cp "$$($(TINYGO) env TINYGOROOT)/targets/wasm_exec.js" $(WORKER_DIR)/build/wasm_exec.js
-	cp $(WORKER_DIR)/src/worker.mjs $(WORKER_DIR)/build/worker.mjs
+	cd $(WORKER_DIR) && npm run build
 
 worker-assets: worker
-	cp $(WORKER_DIR)/build/app.wasm $(ASSETS_DIR)/app.wasm
-	cp $(WORKER_DIR)/build/wasm_exec.js $(ASSETS_DIR)/wasm_exec.js
 	cp $(WORKER_DIR)/build/worker.mjs $(ASSETS_DIR)/worker.mjs
 
 worker-dev:
@@ -112,7 +107,7 @@ help:
 	@echo "  test             Run all Go tests"
 	@echo "  e2e              Run Docker e2e tests (3-peer mesh, requires Docker)"
 	@echo ""
-	@echo "  worker           Build Cloudflare Worker (TinyGo -> Wasm)"
+	@echo "  worker           Build Cloudflare Worker (TypeScript + esbuild)"
 	@echo "  worker-assets    Copy worker artifacts to internal/deploy/assets/"
 	@echo "  worker-dev       Start wrangler dev server"
 	@echo "  worker-deploy    Deploy worker to Cloudflare"
@@ -127,6 +122,5 @@ help:
 	@echo ""
 	@echo "Variables (override with VAR=value):"
 	@echo "  VERSION=$(VERSION)"
-	@echo "  TINYGO=$(TINYGO)"
 	@echo "  GOMOBILE=$(GOMOBILE)"
 	@echo "  OUTPUT_DIR=$(OUTPUT_DIR)"

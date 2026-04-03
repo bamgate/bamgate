@@ -7,8 +7,33 @@ on:
     branches: [main]
 
 jobs:
+  worker:
+    name: Worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: cd worker && pnpm install
+
+      - name: Type check
+        run: cd worker && pnpm run check
+
+      - name: Build
+        run: cd worker && pnpm run build
+
   test:
     name: Test
+    needs: [worker]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -19,6 +44,19 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Build worker
+        run: |
+          cd worker && pnpm install && pnpm run build
+          cp build/worker.mjs ../internal/deploy/assets/worker.mjs
 
       - name: Download dependencies
         run: go mod download
