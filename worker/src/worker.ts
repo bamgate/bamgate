@@ -109,6 +109,11 @@ export class SignalingRoom implements DurableObject {
   constructor(ctx: DurableObjectState, _env: Env) {
     this.ctx = ctx;
 
+    // Automatically respond to "ping" frames with "pong" without waking the DO
+    // from hibernation. This keeps WebSocket connections alive through Cloudflare's
+    // 30-second idle timeout.
+    this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+
     const sendJson = (wsId: number, data: string): void => {
       const ws = this.wsMap.get(wsId);
       if (ws) {
@@ -390,12 +395,19 @@ export class SignalingRoom implements DurableObject {
         owner_github_id TEXT NOT NULL,
         address TEXT NOT NULL,
         refresh_token_hash TEXT NOT NULL,
+        prev_refresh_token_hash TEXT,
         refresh_token_expires_at INTEGER NOT NULL,
         revoked INTEGER DEFAULT 0,
         created_at INTEGER NOT NULL,
         last_seen_at INTEGER
       )
     `);
+    // Migrate existing deployments that don't have prev_refresh_token_hash yet.
+    try {
+      this.ctx.storage.sql.exec(`ALTER TABLE devices ADD COLUMN prev_refresh_token_hash TEXT`);
+    } catch {
+      // Column already exists — ignore.
+    }
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS network (
         key TEXT PRIMARY KEY,
@@ -653,6 +665,7 @@ export class SignalingRoom implements DurableObject {
       device_id: string;
       owner_github_id: string;
       refresh_token_hash: string;
+      prev_refresh_token_hash: string | null;
       refresh_token_expires_at: number;
     };
     const now = Math.floor(Date.now() / 1000);
@@ -662,7 +675,11 @@ export class SignalingRoom implements DurableObject {
     }
 
     const providedHash = await auth.hashToken(refresh_token);
-    if (providedHash !== device.refresh_token_hash) {
+
+    const matchesCurrent = providedHash === device.refresh_token_hash;
+    const matchesPrev = device.prev_refresh_token_hash !== null && providedHash === device.prev_refresh_token_hash;
+
+    if (!matchesCurrent && !matchesPrev) {
       return this._jsonError("invalid refresh token", 401);
     }
 
@@ -670,13 +687,27 @@ export class SignalingRoom implements DurableObject {
     const newHash = await auth.hashToken(newRefreshToken);
     const newExpiresAt = now + 30 * 24 * 60 * 60;
 
-    this.ctx.storage.sql.exec(
-      "UPDATE devices SET refresh_token_hash = ?, refresh_token_expires_at = ?, last_seen_at = ? WHERE device_id = ?",
-      newHash,
-      newExpiresAt,
-      now,
-      device_id
-    );
+    if (matchesCurrent) {
+      // Normal rotation: preserve current hash as prev so a lost response
+      // can still be replayed once.
+      this.ctx.storage.sql.exec(
+        "UPDATE devices SET prev_refresh_token_hash = refresh_token_hash, refresh_token_hash = ?, refresh_token_expires_at = ?, last_seen_at = ? WHERE device_id = ?",
+        newHash,
+        newExpiresAt,
+        now,
+        device_id
+      );
+    } else {
+      // Client is replaying an old token — the previous rotation response was
+      // lost. Issue a fresh token but clear prev so the grace slot is consumed.
+      this.ctx.storage.sql.exec(
+        "UPDATE devices SET prev_refresh_token_hash = NULL, refresh_token_hash = ?, refresh_token_expires_at = ?, last_seen_at = ? WHERE device_id = ?",
+        newHash,
+        newExpiresAt,
+        now,
+        device_id
+      );
+    }
 
     const accessToken = await this._signJWT({
       sub: device_id,
