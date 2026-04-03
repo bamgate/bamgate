@@ -264,8 +264,23 @@ export class SignalingRoom implements DurableObject {
         msg.metadata || {}
       );
 
+      // Send existing peer list directly to the joining client.
       const peersMsg = JSON.stringify({ type: "peers", peers: existingPeers });
-      this.hub.message(wsId, peersMsg);
+      const joinWs = this.wsMap.get(wsId);
+      if (joinWs) {
+        try { joinWs.send(peersMsg); } catch { /* closing */ }
+      }
+
+      // Broadcast peer-joined to all existing peers.
+      const joinedMsg = JSON.stringify({
+        type: "peer-joined",
+        peerId: msg.peerId,
+        publicKey: msg.publicKey || "",
+        address: msg.address || "",
+        routes: msg.routes || [],
+        metadata: msg.metadata || {},
+      });
+      this.hub.broadcast(wsId, joinedMsg);
       return;
     }
 

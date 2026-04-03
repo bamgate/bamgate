@@ -1627,7 +1627,22 @@ var SignalingRoom = class {
         msg.metadata || {}
       );
       const peersMsg = JSON.stringify({ type: "peers", peers: existingPeers });
-      this.hub.message(wsId, peersMsg);
+      const joinWs = this.wsMap.get(wsId);
+      if (joinWs) {
+        try {
+          joinWs.send(peersMsg);
+        } catch {
+        }
+      }
+      const joinedMsg = JSON.stringify({
+        type: "peer-joined",
+        peerId: msg.peerId,
+        publicKey: msg.publicKey || "",
+        address: msg.address || "",
+        routes: msg.routes || [],
+        metadata: msg.metadata || {}
+      });
+      this.hub.broadcast(wsId, joinedMsg);
       return;
     }
     const text = typeof message === "string" ? message : new TextDecoder().decode(message);
