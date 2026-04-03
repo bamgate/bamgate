@@ -52,10 +52,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mobile.Mobile
+import android.util.Log
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.IOException
+
+private const val TAG = "BamgateSetup"
 
 // GitHub OAuth Device Authorization Grant client ID (public, no secret needed).
 private const val GITHUB_CLIENT_ID = "Ov23liOEzb4I8AiZupu2"
@@ -76,6 +80,7 @@ private data class DeviceCodeResponse(
  * Must be called on a background thread.
  */
 private fun requestDeviceCode(): DeviceCodeResponse {
+    Log.i(TAG, "Requesting device code from GitHub...")
     val formBody = FormBody.Builder()
         .add("client_id", GITHUB_CLIENT_ID)
         .add("scope", "read:user")
@@ -92,9 +97,11 @@ private fun requestDeviceCode(): DeviceCodeResponse {
             ?: throw Exception("GitHub device/code returned empty body")
 
         if (!response.isSuccessful) {
+            Log.e(TAG, "GitHub device/code failed: HTTP ${response.code} body=$responseBody")
             throw Exception("GitHub device/code failed: HTTP ${response.code}")
         }
 
+        Log.i(TAG, "Device code received successfully")
         val json = JSONObject(responseBody)
         return DeviceCodeResponse(
             deviceCode = json.getString("device_code"),
@@ -114,6 +121,9 @@ private fun requestDeviceCode(): DeviceCodeResponse {
 private fun pollForAccessToken(deviceCode: String, intervalSeconds: Int, expiresIn: Int): String {
     var interval = maxOf(intervalSeconds, 5).toLong()
     val deadline = System.currentTimeMillis() + expiresIn * 1000L
+    var networkErrors = 0
+
+    Log.i(TAG, "Starting token poll (interval=${interval}s, expires=${expiresIn}s)")
 
     while (System.currentTimeMillis() < deadline) {
         Thread.sleep(interval * 1000)
@@ -130,26 +140,44 @@ private fun pollForAccessToken(deviceCode: String, intervalSeconds: Int, expires
             .post(formBody)
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
-            val responseBody = response.body?.string()
-                ?: throw Exception("GitHub token poll returned empty body")
+        try {
+            httpClient.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string()
+                    ?: throw Exception("GitHub token poll returned empty body")
 
-            val json = JSONObject(responseBody)
-            val error = json.optString("error", "")
+                networkErrors = 0 // reset on success
 
-            when (error) {
-                "" -> {
-                    val token = json.getString("access_token")
-                    if (token.isNotEmpty()) return token
+                val json = JSONObject(responseBody)
+                val error = json.optString("error", "")
+
+                when (error) {
+                    "" -> {
+                        val token = json.getString("access_token")
+                        if (token.isNotEmpty()) {
+                            Log.i(TAG, "Access token received")
+                            return token
+                        }
+                    }
+                    "authorization_pending" -> {
+                        Log.d(TAG, "Authorization pending, continuing poll...")
+                    }
+                    "slow_down" -> {
+                        interval += 5
+                        Log.i(TAG, "Slow down requested, new interval=${interval}s")
+                    }
+                    "expired_token" -> throw Exception("Authorization expired. Please try again.")
+                    "access_denied" -> throw Exception("Authorization was denied.")
+                    else -> throw Exception("GitHub error: $error")
                 }
-                "authorization_pending" -> { /* continue polling */ }
-                "slow_down" -> {
-                    interval += 5
-                }
-                "expired_token" -> throw Exception("Authorization expired. Please try again.")
-                "access_denied" -> throw Exception("Authorization was denied.")
-                else -> throw Exception("GitHub error: $error")
             }
+        } catch (e: IOException) {
+            networkErrors++
+            Log.w(TAG, "Network error during token poll (attempt $networkErrors): ${e.message}")
+            if (networkErrors >= 10) {
+                Log.e(TAG, "Too many consecutive network errors, giving up")
+                throw Exception("Network error: ${e.message}. Check your connection and try again.")
+            }
+            // Retry — transient network error (e.g. app backgrounded, wifi blip)
         }
     }
 
@@ -385,6 +413,7 @@ fun SetupScreen(
                                 isRegistering = true
 
                                 // Step 3: Register device with bamgate server.
+                                Log.i(TAG, "Registering device '$deviceName' with $serverHost...")
                                 val result = withContext(Dispatchers.IO) {
                                     Mobile.registerDevice(
                                         serverHost,
@@ -394,9 +423,12 @@ fun SetupScreen(
                                 }
 
                                 // Step 4: Save config and finish.
+                                Log.i(TAG, "Device registered, saving config...")
                                 configRepo.saveConfig(result.configTOML)
+                                Log.i(TAG, "Setup complete!")
                                 onSetupComplete()
                             } catch (e: Exception) {
+                                Log.e(TAG, "Setup failed", e)
                                 error = e.message ?: "Setup failed"
                                 isRequestingCode = false
                                 isPolling = false
