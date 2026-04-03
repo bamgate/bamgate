@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "esbuild src/worker.ts --bundle --format=esm --outfile=build/worker.mjs --platform=neutral --conditions=workerd",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "tsc --noEmit",
@@ -11,6 +12,7 @@
     "deploy": "npx wrangler deploy"
   },
   "devDependencies": {
+    "esbuild": "^0.25.0",
     "@cloudflare/vitest-pool-workers": "^0.7.0",
     "@cloudflare/workers-types": "^4.20241231.0",
     "typescript": "^5.7.0",
