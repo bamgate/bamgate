@@ -52,13 +52,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mobile.Mobile
+import okhttp3.FormBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 
 // GitHub OAuth Device Authorization Grant client ID (public, no secret needed).
 private const val GITHUB_CLIENT_ID = "Ov23liOEzb4I8AiZupu2"
+
+// Shared OkHttpClient instance — reused across all HTTP calls.
+private val httpClient = OkHttpClient()
 
 private data class DeviceCodeResponse(
     val deviceCode: String,
@@ -73,32 +76,34 @@ private data class DeviceCodeResponse(
  * Must be called on a background thread.
  */
 private fun requestDeviceCode(): DeviceCodeResponse {
-    val url = URL("https://github.com/login/device/code")
-    val conn = url.openConnection() as HttpURLConnection
-    conn.requestMethod = "POST"
-    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-    conn.setRequestProperty("Accept", "application/json")
-    conn.doOutput = true
+    val formBody = FormBody.Builder()
+        .add("client_id", GITHUB_CLIENT_ID)
+        .add("scope", "read:user")
+        .build()
 
-    val body = "client_id=$GITHUB_CLIENT_ID&scope=read:user"
-    OutputStreamWriter(conn.outputStream).use { it.write(body) }
+    val request = Request.Builder()
+        .url("https://github.com/login/device/code")
+        .header("Accept", "application/json")
+        .post(formBody)
+        .build()
 
-    val responseCode = conn.responseCode
-    val responseBody = conn.inputStream.bufferedReader().readText()
-    conn.disconnect()
+    httpClient.newCall(request).execute().use { response ->
+        val responseBody = response.body?.string()
+            ?: throw Exception("GitHub device/code returned empty body")
 
-    if (responseCode != 200) {
-        throw Exception("GitHub device/code failed: HTTP $responseCode")
+        if (!response.isSuccessful) {
+            throw Exception("GitHub device/code failed: HTTP ${response.code}")
+        }
+
+        val json = JSONObject(responseBody)
+        return DeviceCodeResponse(
+            deviceCode = json.getString("device_code"),
+            userCode = json.getString("user_code"),
+            verificationUri = json.getString("verification_uri"),
+            expiresIn = json.getInt("expires_in"),
+            interval = json.getInt("interval")
+        )
     }
-
-    val json = JSONObject(responseBody)
-    return DeviceCodeResponse(
-        deviceCode = json.getString("device_code"),
-        userCode = json.getString("user_code"),
-        verificationUri = json.getString("verification_uri"),
-        expiresIn = json.getInt("expires_in"),
-        interval = json.getInt("interval")
-    )
 }
 
 /**
@@ -113,35 +118,38 @@ private fun pollForAccessToken(deviceCode: String, intervalSeconds: Int, expires
     while (System.currentTimeMillis() < deadline) {
         Thread.sleep(interval * 1000)
 
-        val url = URL("https://github.com/login/oauth/access_token")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-        conn.setRequestProperty("Accept", "application/json")
-        conn.doOutput = true
+        val formBody = FormBody.Builder()
+            .add("client_id", GITHUB_CLIENT_ID)
+            .add("device_code", deviceCode)
+            .add("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+            .build()
 
-        val body = "client_id=$GITHUB_CLIENT_ID&device_code=$deviceCode&grant_type=urn:ietf:params:oauth:grant-type:device_code"
-        OutputStreamWriter(conn.outputStream).use { it.write(body) }
+        val request = Request.Builder()
+            .url("https://github.com/login/oauth/access_token")
+            .header("Accept", "application/json")
+            .post(formBody)
+            .build()
 
-        val responseBody = conn.inputStream.bufferedReader().readText()
-        conn.disconnect()
+        httpClient.newCall(request).execute().use { response ->
+            val responseBody = response.body?.string()
+                ?: throw Exception("GitHub token poll returned empty body")
 
-        val json = JSONObject(responseBody)
-        val error = json.optString("error", "")
+            val json = JSONObject(responseBody)
+            val error = json.optString("error", "")
 
-        when (error) {
-            "" -> {
-                val token = json.getString("access_token")
-                if (token.isNotEmpty()) return token
+            when (error) {
+                "" -> {
+                    val token = json.getString("access_token")
+                    if (token.isNotEmpty()) return token
+                }
+                "authorization_pending" -> { /* continue polling */ }
+                "slow_down" -> {
+                    interval += 5
+                }
+                "expired_token" -> throw Exception("Authorization expired. Please try again.")
+                "access_denied" -> throw Exception("Authorization was denied.")
+                else -> throw Exception("GitHub error: $error")
             }
-            "authorization_pending" -> continue
-            "slow_down" -> {
-                interval += 5
-                continue
-            }
-            "expired_token" -> throw Exception("Authorization expired. Please try again.")
-            "access_denied" -> throw Exception("Authorization was denied.")
-            else -> throw Exception("GitHub error: $error")
         }
     }
 

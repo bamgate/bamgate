@@ -64,6 +64,9 @@ dependencies {
     // Chrome Custom Tabs for in-app browser (OAuth device flow)
     implementation("androidx.browser:browser:1.8.0")
 
+    // OkHttp for reliable HTTP on Android (fixes DNS resolution issues with HttpURLConnection)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // CameraX + ML Kit for QR code scanning
     implementation("androidx.camera:camera-camera2:1.4.1")
     implementation("androidx.camera:camera-lifecycle:1.4.1")
