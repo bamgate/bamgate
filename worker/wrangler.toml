@@ -1,16 +1,7 @@
 name = "bamgate"
-main = "./build/worker.mjs"
+main = "./src/worker.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
-no_bundle = true
-find_additional_modules = true
-
-[[rules]]
-type = "ESModule"
-globs = ["**/*.js"]
-
-[build]
-command = "npm run build"
 
 [[durable_objects.bindings]]
 name = "SIGNALING_ROOM"

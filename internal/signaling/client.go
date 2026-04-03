@@ -64,6 +64,11 @@ type ClientConfig struct {
 
 	// Reconnect controls automatic reconnection behavior.
 	Reconnect ReconnectConfig
+
+	// PingInterval is how often a WebSocket ping frame is sent to keep the
+	// connection alive. Defaults to 30s if zero. Set to a negative value to
+	// disable pings entirely.
+	PingInterval time.Duration
 }
 
 // ReconnectConfig controls the reconnection backoff strategy.
@@ -317,15 +322,43 @@ func (c *Client) receiveLoop(ctx context.Context) {
 // readMessages reads messages from the current connection until an error
 // occurs or the context is cancelled. Returns nil only on clean close.
 func (c *Client) readMessages(ctx context.Context) error {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+
+	if conn == nil {
+		return errors.New("no connection")
+	}
+
+	// Start a keepalive ping goroutine for the duration of this connection.
+	pingInterval := c.cfg.PingInterval
+	if pingInterval == 0 {
+		pingInterval = 30 * time.Second
+	}
+	if pingInterval > 0 {
+		pingCtx, pingCancel := context.WithCancel(ctx)
+		defer pingCancel()
+
+		go func() {
+			ticker := time.NewTicker(pingInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-pingCtx.Done():
+					return
+				case <-ticker.C:
+					if err := conn.Ping(pingCtx); err != nil {
+						// Ping failure is expected when the connection is
+						// closing; the read loop will surface the real error.
+						return
+					}
+					c.log.Debug("sent websocket ping")
+				}
+			}
+		}()
+	}
+
 	for {
-		c.mu.Lock()
-		conn := c.conn
-		c.mu.Unlock()
-
-		if conn == nil {
-			return errors.New("no connection")
-		}
-
 		_, data, err := conn.Read(ctx)
 		if err != nil {
 			return err

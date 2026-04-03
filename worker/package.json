@@ -1,15 +1,20 @@
 {
   "name": "bamgate-worker",
+  "version": "0.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "npm run build:wasm && npm run build:assets && npm run build:worker",
-    "build:wasm": "~/.local/tinygo/bin/tinygo build -o ./build/app.wasm -target wasm -no-debug .",
-    "build:assets": "cp $(~/.local/tinygo/bin/tinygo env TINYGOROOT)/targets/wasm_exec.js ./build/wasm_exec.js",
-    "build:worker": "cp ./src/worker.mjs ./build/worker.mjs",
-    "dev": "npm run build && npx wrangler dev",
-    "deploy": "npm run build && npx wrangler deploy"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "tsc --noEmit",
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.7.0",
+    "@cloudflare/workers-types": "^4.20241231.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0",
     "wrangler": "^4"
   }
 }
