@@ -384,6 +384,16 @@ func (a *Agent) handleMessage(ctx context.Context, msg protocol.Message) error {
 	switch m := msg.(type) {
 	case *protocol.PeersMessage:
 		return a.handlePeers(ctx, m)
+	case *protocol.PeerJoinedMessage:
+		return a.handlePeers(ctx, &protocol.PeersMessage{
+			Peers: []protocol.PeerInfo{{
+				PeerID:    m.PeerID,
+				PublicKey: m.PublicKey,
+				Address:   m.Address,
+				Routes:    m.Routes,
+				Metadata:  m.Metadata,
+			}},
+		})
 	case *protocol.OfferMessage:
 		return a.handleOffer(ctx, m)
 	case *protocol.AnswerMessage:
@@ -539,7 +549,9 @@ func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) err
 
 	// Store the remote peer's WireGuard public key. The offer carries the
 	// sender's public key so the answering side can configure WireGuard
-	// before the data channel opens.
+	// before the data channel opens. Create a peer state entry if one
+	// doesn't exist yet (e.g. peer-joined notification arrived late or
+	// was lost).
 	if msg.PublicKey != "" {
 		if wgPubKey, err := config.ParseKey(msg.PublicKey); err != nil {
 			a.log.Warn("invalid public key in offer", "from", msg.From, "error", err)
@@ -547,6 +559,8 @@ func (a *Agent) handleOffer(ctx context.Context, msg *protocol.OfferMessage) err
 			a.mu.Lock()
 			if ps, ok := a.peers[msg.From]; ok {
 				ps.publicKey = wgPubKey
+			} else {
+				a.peers[msg.From] = &peerState{publicKey: wgPubKey}
 			}
 			a.mu.Unlock()
 		}
