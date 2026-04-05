@@ -90,6 +90,18 @@ type PeersMessage struct {
 
 func (PeersMessage) MessageType() string { return "peers" }
 
+// PeerJoinedMessage is broadcast by the server to existing peers when a new
+// peer joins. It carries the same info as a PeerInfo entry in PeersMessage.
+type PeerJoinedMessage struct {
+	PeerID    string            `json:"peerId"`
+	PublicKey string            `json:"publicKey"`
+	Address   string            `json:"address,omitempty"`
+	Routes    []string          `json:"routes,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+func (PeerJoinedMessage) MessageType() string { return "peer-joined" }
+
 // PeerLeftMessage is broadcast by the server when a peer disconnects.
 type PeerLeftMessage struct {
 	PeerID string `json:"peerId"`
@@ -105,6 +117,7 @@ var messageTypes = map[string]func() Message{
 	"answer":        func() Message { return &AnswerMessage{} },
 	"ice-candidate": func() Message { return &ICECandidateMessage{} },
 	"peers":         func() Message { return &PeersMessage{} },
+	"peer-joined":   func() Message { return &PeerJoinedMessage{} },
 	"peer-left":     func() Message { return &PeerLeftMessage{} },
 }
 
