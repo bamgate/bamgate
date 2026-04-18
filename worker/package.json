@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/worker.ts --bundle --format=esm --outfile=build/worker.mjs --platform=neutral --conditions=workerd",
+    "build": "esbuild src/worker.ts --bundle --format=esm --outfile=build/worker.mjs --external:cloudflare:workers --conditions=workerd --platform=neutral",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "tsc --noEmit",

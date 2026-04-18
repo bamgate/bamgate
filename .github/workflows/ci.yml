@@ -19,17 +19,14 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install pnpm
-        run: npm install -g pnpm
-
       - name: Install dependencies
-        run: cd worker && pnpm install
+        run: cd worker && npm ci
 
       - name: Type check
-        run: cd worker && pnpm run check
+        run: cd worker && npm run check
 
       - name: Build
-        run: cd worker && pnpm run build
+        run: cd worker && npm run build
 
   test:
     name: Test
@@ -50,12 +47,9 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install pnpm
-        run: npm install -g pnpm
-
       - name: Build worker
         run: |
-          cd worker && pnpm install && pnpm run build
+          cd worker && npm ci && npm run build
           cp build/worker.mjs ../internal/deploy/assets/worker.mjs
 
       - name: Download dependencies
