@@ -26,12 +26,9 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install pnpm
-        run: npm install -g pnpm
-
       - name: Build worker
         run: |
-          cd worker && pnpm install && pnpm run build
+          cd worker && npm ci && npm run build
           cp build/worker.mjs ../internal/deploy/assets/worker.mjs
 
       - name: Run GoReleaser
